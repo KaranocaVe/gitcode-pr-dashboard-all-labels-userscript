@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitCode PR Dashboard: All Pages + Labels
 // @namespace    https://github.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript
-// @version      1.0.0
+// @version      1.1.0
 // @updateURL    https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
 // @downloadURL  https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
 // @description  Load all GitCode pull requests in the selected status and filter them by counted labels.
@@ -38,6 +38,8 @@
   let loadedRequestKey = "";
   let loadedState = "";
   let loadedRecords = [];
+  let lastStatusMessage = "正在请求当前状态的全部 PR 页面…";
+  let lastStatusKind = "info";
   let currentController = null;
   let generation = 0;
   let loading = false;
@@ -116,10 +118,40 @@
   }
 
   function setStatus(message, kind) {
+    lastStatusMessage = message;
+    lastStatusKind = kind || "info";
     const status = document.getElementById(STATUS_ID);
     if (!status) return;
-    status.textContent = message;
-    status.dataset.kind = kind || "info";
+    status.textContent = lastStatusMessage;
+    status.dataset.kind = lastStatusKind;
+  }
+
+  function createLabelStrip() {
+    const strip = document.createElement("div");
+    strip.className = "gcpr-label-strip";
+
+    const heading = document.createElement("div");
+    heading.className = "gcpr-label-heading";
+    const title = document.createElement("span");
+    title.textContent = "Label";
+    const loaded = document.createElement("span");
+    loaded.className = "gcpr-label-loaded";
+    heading.append(title, loaded);
+
+    const items = document.createElement("div");
+    items.className = "gcpr-label-items";
+    items.setAttribute("role", "group");
+    items.setAttribute("aria-label", "PR label 及命中数量");
+
+    const clear = document.createElement("button");
+    clear.className = "gcpr-label-clear";
+    clear.type = "button";
+    clear.setAttribute("aria-label", "清除所有 label 筛选");
+    clear.hidden = true;
+    clear.textContent = "清除";
+
+    strip.append(heading, items, clear);
+    return strip;
   }
 
   function ensureControls() {
@@ -129,27 +161,28 @@
     addStyles();
 
     let toolbar = main.querySelector("#" + TOOLBAR_ID);
+    let rebuilt = false;
     if (!toolbar) {
       toolbar = document.createElement("div");
       toolbar.id = TOOLBAR_ID;
       toolbar.setAttribute("role", "group");
       toolbar.setAttribute("aria-label", "按 label 筛选完整 PR 列表");
-      toolbar.innerHTML =
-        '<div class="gcpr-label-strip">' +
-          '<div class="gcpr-label-heading"><span>Label</span><span class="gcpr-label-loaded">等待加载</span></div>' +
-          '<div class="gcpr-label-items" role="group" aria-label="PR label 及命中数量"></div>' +
-          '<button class="gcpr-label-clear" type="button" aria-label="清除所有 label 筛选" hidden>清除</button>' +
-        '</div>';
       main.insertBefore(toolbar, tabs);
-      toolbar.prepend(tabs);
+      rebuilt = true;
+    }
 
-      const status = document.createElement("div");
-      status.id = STATUS_ID;
-      status.setAttribute("role", "status");
-      status.setAttribute("aria-live", "polite");
-      status.textContent = "正在请求当前状态的全部 PR 页面…";
-      toolbar.insertAdjacentElement("afterend", status);
+    const labelStrip = toolbar.querySelector(".gcpr-label-strip");
+    if (!labelStrip || !labelStrip.querySelector(".gcpr-label-items") ||
+        !labelStrip.querySelector(".gcpr-label-loaded") || !labelStrip.querySelector(".gcpr-label-clear")) {
+      labelStrip?.remove();
+      toolbar.append(createLabelStrip());
+      rebuilt = true;
+    }
 
+    if (tabs.parentElement !== toolbar) toolbar.prepend(tabs);
+
+    if (toolbar.dataset.gcprEventsBound !== "true") {
+      toolbar.dataset.gcprEventsBound = "true";
       toolbar.addEventListener("click", (event) => {
         const clear = event.target.closest(".gcpr-label-clear");
         if (clear) {
@@ -166,12 +199,26 @@
         renderLabelPills(loadedRecords);
         applyLabelFilter();
       });
-    } else if (tabs.parentElement !== toolbar) {
-      toolbar.prepend(tabs);
     }
 
-    const status = document.getElementById(STATUS_ID);
-    if (status && status.previousElementSibling !== toolbar) toolbar.insertAdjacentElement("afterend", status);
+    let status = document.getElementById(STATUS_ID);
+    if (!status) {
+      status = document.createElement("div");
+      status.id = STATUS_ID;
+      status.setAttribute("role", "status");
+      status.setAttribute("aria-live", "polite");
+      toolbar.insertAdjacentElement("afterend", status);
+      setStatus(lastStatusMessage, lastStatusKind);
+    } else if (status.previousElementSibling !== toolbar) {
+      toolbar.insertAdjacentElement("afterend", status);
+    }
+
+    if (rebuilt || toolbar.dataset.gcprLabelsKey !== loadedRequestKey) {
+      renderLabelPills(loadedRecords);
+      if (loadedRequestKey && loadedState === getActiveState()) {
+        setStatus(lastStatusMessage, lastStatusKind);
+      }
+    }
     return toolbar;
   }
 
@@ -230,10 +277,13 @@
   function renderLabelPills(records) {
     const toolbar = document.getElementById(TOOLBAR_ID);
     const items = toolbar?.querySelector(".gcpr-label-items");
-    if (!toolbar || !items) return;
+    const loaded = toolbar?.querySelector(".gcpr-label-loaded");
+    const clear = toolbar?.querySelector(".gcpr-label-clear");
+    if (!toolbar || !items || !loaded || !clear) return;
 
     const labels = summarizeLabels(records || []);
-    toolbar.querySelector(".gcpr-label-loaded").textContent = records.length ? "当前 " + records.length + " 条" : "暂无 PR";
+    toolbar.dataset.gcprLabelsKey = loadedRequestKey;
+    loaded.textContent = records.length ? "当前 " + records.length + " 条" : "暂无 PR";
     items.replaceChildren();
 
     if (!labels.length) {
@@ -260,7 +310,7 @@
         items.append(pill);
       }
     }
-    toolbar.querySelector(".gcpr-label-clear").hidden = selectedLabels.size === 0;
+    clear.hidden = selectedLabels.size === 0;
   }
 
   function relativeTime(value) {
