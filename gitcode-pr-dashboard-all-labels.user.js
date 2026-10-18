@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitCode PR Dashboard: All Pages + Labels
 // @namespace    https://github.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript
-// @version      1.2.1
+// @version      1.3.0
 // @updateURL    https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
 // @downloadURL  https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
 // @description  Load all GitCode pull requests in the selected status and filter them by counted labels.
@@ -16,7 +16,7 @@
   if (window.__gcprAllPagesLabelsInstalled) return;
   window.__gcprAllPagesLabelsInstalled = true;
 
-  const VERSION = "1.2.1";
+  const VERSION = "1.3.0";
   const LAYOUT_CLASS = "gcpr-label-layout";
   const API_ORIGIN = "https://web-api.gitcode.com";
   const API_PATH = "/issuepr/api/v1/merge_requests";
@@ -114,6 +114,8 @@
       "#" + TOOLBAR_ID + " .gcpr-label-count{font-size:11px;font-weight:700;opacity:.9}" +
       "#" + TOOLBAR_ID + " .gcpr-label-clear{flex:0 0 auto;border:0;background:transparent;color:var(--theme-text-weak,#656d76);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}" +
       "#" + TOOLBAR_ID + " .gcpr-label-clear[hidden]{display:none}" +
+      "#" + TOOLBAR_ID + " .gcpr-export-json{flex:0 0 auto;border:1px solid var(--theme-border,#d0d7de);border-radius:6px;padding:4px 9px;background:var(--theme-bg,#fff);color:var(--theme-text,#24292f);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}" +
+      "#" + TOOLBAR_ID + " .gcpr-export-json:disabled{opacity:.5;cursor:not-allowed}" +
       "#" + STATUS_ID + "{margin:0 0 10px;color:var(--theme-text-weak,#656d76);font-size:12px}" +
       ".pd-pulls .list-item--pull." + HIDDEN_CLASS + "{display:none!important}" +
       ".pd-pulls .issue-pagination." + PAGER_HIDDEN_CLASS + "{display:none!important}" +
@@ -124,6 +126,7 @@
   function setStatus(message, kind) {
     lastStatusMessage = message;
     lastStatusKind = kind || "info";
+    updateExportButton();
     const status = document.getElementById(STATUS_ID);
     if (!status) return;
     status.textContent = lastStatusMessage + " · v" + VERSION;
@@ -155,7 +158,13 @@
     clear.hidden = true;
     clear.textContent = "清除";
 
-    strip.append(heading, items, clear);
+    const exportButton = document.createElement("button");
+    exportButton.className = "gcpr-export-json";
+    exportButton.type = "button";
+    exportButton.disabled = true;
+    exportButton.textContent = "导出 JSON";
+
+    strip.append(heading, items, clear, exportButton);
     return strip;
   }
 
@@ -180,7 +189,8 @@
 
     const labelStrip = toolbar.querySelector(".gcpr-label-strip");
     if (!labelStrip || !labelStrip.querySelector(".gcpr-label-items") ||
-        !labelStrip.querySelector(".gcpr-label-loaded") || !labelStrip.querySelector(".gcpr-label-clear")) {
+        !labelStrip.querySelector(".gcpr-label-loaded") || !labelStrip.querySelector(".gcpr-label-clear") ||
+        !labelStrip.querySelector(".gcpr-export-json")) {
       labelStrip?.remove();
       toolbar.append(createLabelStrip());
       rebuilt = true;
@@ -193,6 +203,10 @@
     if (toolbar.dataset.gcprEventsBound !== "true") {
       toolbar.dataset.gcprEventsBound = "true";
       toolbar.addEventListener("click", (event) => {
+        if (event.target.closest(".gcpr-export-json")) {
+          exportCurrentList();
+          return;
+        }
         const clear = event.target.closest(".gcpr-label-clear");
         if (clear) {
           selectedLabels.clear();
@@ -228,6 +242,7 @@
         setStatus(lastStatusMessage, lastStatusKind);
       }
     }
+    updateExportButton();
     return toolbar;
   }
 
@@ -320,6 +335,7 @@
       }
     }
     clear.hidden = selectedLabels.size === 0;
+    updateExportButton();
   }
 
   function relativeTime(value) {
@@ -464,14 +480,63 @@
     return row;
   }
 
+  function matchesSelectedLabels(labelNames) {
+    const labels = new Set(labelNames.map(normalize));
+    return [...selectedLabels].every((label) => labels.has(normalize(label)));
+  }
+
+  function filteredRecords() {
+    return loadedRecords.filter((record) => matchesSelectedLabels(record.labels.map((label) => label.name)));
+  }
+
+  function canExportCurrentList() {
+    const list = getList();
+    return !loading && lastStatusKind === "complete" && Boolean(loadedRequestKey) &&
+      loadedRequestKey === activeRequestKey && loadedState === getActiveState() &&
+      list?.dataset.gcprFullLoaded === "true" && list.dataset.gcprQueryKey === loadedRequestKey;
+  }
+
+  function updateExportButton() {
+    const button = document.querySelector("#" + TOOLBAR_ID + " .gcpr-export-json");
+    if (!button) return;
+    const ready = canExportCurrentList();
+    const text = ready ? "导出 JSON（" + filteredRecords().length + "）" : "导出 JSON";
+    const title = ready ? "导出当前 label 筛选后的完整 PR 列表" : "请等待当前列表完整加载";
+    if (button.disabled !== !ready) button.disabled = !ready;
+    if (button.textContent !== text) button.textContent = text;
+    if (button.title !== title) button.title = title;
+  }
+
+  function exportCurrentList() {
+    if (!canExportCurrentList()) return;
+    const records = filteredRecords().map((record) => ({
+      ...record,
+      url: pathHref(record.projectPath, "pull/" + record.iid)
+    }));
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const blob = new Blob([JSON.stringify(records, null, 2) + "\n"], {type:"application/json;charset=utf-8"});
+    const address = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = address;
+    anchor.download = "gitcode-pulls-" + loadedState + "-" + records.length + "-" + timestamp + ".json";
+    anchor.hidden = true;
+    document.body.append(anchor);
+    try {
+      anchor.click();
+    } finally {
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(address), 1000);
+    }
+  }
+
   function applyLabelFilter() {
     const list = getList();
     if (!list) return;
     for (const row of list.querySelectorAll(".list-item--pull")) {
-      const labels = new Set([...row.querySelectorAll(".g-label-tag-text")].map((node) => normalize(node.getAttribute("title") || node.textContent)));
-      const matches = [...selectedLabels].every((label) => labels.has(normalize(label)));
-      row.classList.toggle(HIDDEN_CLASS, !matches);
+      const labels = [...row.querySelectorAll(".g-label-tag-text")].map((node) => node.getAttribute("title") || node.textContent);
+      row.classList.toggle(HIDDEN_CLASS, !matchesSelectedLabels(labels));
     }
+    updateExportButton();
   }
 
   function renderRecords(records, key) {
