@@ -27,6 +27,7 @@
   const PAGER_HIDDEN_CLASS = "gcpr-full-pagination-hidden";
   const LIST_LOADING_CLASS = "gcpr-full-list-loading";
   const ownRequestUrls = new Set();
+  const requestTemplates = new Map();
   const selectedLabels = new Set();
 
   let requestObserver;
@@ -567,9 +568,9 @@
       const url = new URL(rawUrl);
       if (url.origin !== API_ORIGIN || url.pathname !== API_PATH) return false;
       if (Number(url.searchParams.get("page") || 1) !== 1) return false;
-      if (ownRequestUrls.has(url.href)) return false;
       const requestState = url.searchParams.get("state") || "opened";
-      return requestState === getActiveState();
+      requestTemplates.set(requestState, url.href);
+      return !ownRequestUrls.has(url.href) && requestState === getActiveState();
     } catch {
       return false;
     }
@@ -579,6 +580,26 @@
     if (!location.pathname.startsWith("/dashboard/pulls")) return;
     if (!activeRequestUrl(rawUrl)) return;
     loadAllPages(rawUrl);
+  }
+
+  function ensureActiveDataset() {
+    if (!location.pathname.startsWith("/dashboard/pulls")) return;
+    const state = getActiveState();
+    if (loadedState === state && loadedRequestKey) return;
+    const template = requestTemplates.get(state) || requestTemplates.values().next().value;
+    if (!template) return;
+    const url = new URL(template);
+    url.searchParams.set("state", state);
+    url.searchParams.set("page", "1");
+    url.searchParams.set("per_page", String(PAGE_SIZE));
+    loadAllPages(url.href);
+  }
+
+  function handleRouteChange() {
+    setTimeout(() => {
+      scheduleChrome();
+      ensureActiveDataset();
+    }, 0);
   }
 
   function syncChrome() {
@@ -593,6 +614,7 @@
     }
 
     ensureControls();
+    if (!loading && loadedRequestKey && loadedState !== getActiveState()) ensureActiveDataset();
     if (!loading && loadedRequestKey && loadedState === getActiveState()) {
       document.querySelector(".issue-pagination")?.classList.add(PAGER_HIDDEN_CLASS);
     }
@@ -613,6 +635,10 @@
     for (const entry of initialEntries) handleResource(entry.name);
     domObserver = new MutationObserver(scheduleChrome);
     domObserver.observe(document.documentElement, {childList:true,subtree:true,characterData:true});
+    document.addEventListener("click", (event) => {
+      if (event.target instanceof Element && event.target.closest(".pd-pulls .collab-status-tabs [role='tab']")) handleRouteChange();
+    });
+    window.addEventListener("popstate", handleRouteChange);
     syncChrome();
   }
 
