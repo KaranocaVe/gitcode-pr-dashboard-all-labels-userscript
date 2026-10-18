@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitCode PR Dashboard: All Pages + Labels
 // @namespace    https://github.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript
-// @version      1.2.0
+// @version      1.2.1
 // @updateURL    https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
 // @downloadURL  https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
 // @description  Load all GitCode pull requests in the selected status and filter them by counted labels.
@@ -16,7 +16,7 @@
   if (window.__gcprAllPagesLabelsInstalled) return;
   window.__gcprAllPagesLabelsInstalled = true;
 
-  const VERSION = "1.2.0";
+  const VERSION = "1.2.1";
   const LAYOUT_CLASS = "gcpr-label-layout";
   const API_ORIGIN = "https://web-api.gitcode.com";
   const API_PATH = "/issuepr/api/v1/merge_requests";
@@ -102,7 +102,7 @@
       "." + LAYOUT_CLASS + "{display:flex!important;flex-direction:row!important;flex-wrap:wrap!important;align-items:center;gap:14px;min-width:0}" +
       "." + LAYOUT_CLASS + ">*{flex:0 0 100%;min-width:0;max-width:100%;box-sizing:border-box}" +
       "." + LAYOUT_CLASS + ">.collab-status-tabs{flex:0 1 auto!important;width:auto!important;min-width:0!important;max-width:100%!important}" +
-      "." + LAYOUT_CLASS + ">#" + TOOLBAR_ID + "{flex:1 1 320px!important;width:auto!important;min-width:min(100%,280px)!important;max-width:100%!important}" +
+      "." + LAYOUT_CLASS + ">#" + TOOLBAR_ID + "{flex:0 0 100%!important;width:100%!important;min-width:0!important;max-width:100%!important}" +
       "#" + TOOLBAR_ID + "{display:flex;align-items:center;box-sizing:border-box;margin:0;min-height:34px}" +
       "#" + TOOLBAR_ID + " .gcpr-label-strip{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0;overflow:hidden}" +
       "#" + TOOLBAR_ID + " .gcpr-label-heading{display:flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;font-size:12px;color:var(--theme-text-weak,#656d76)}" +
