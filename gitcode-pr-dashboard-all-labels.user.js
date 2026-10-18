@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitCode PR Dashboard: All Pages + Labels
 // @namespace    https://github.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript
-// @version      1.1.0
+// @version      1.2.0
 // @updateURL    https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
 // @downloadURL  https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
 // @description  Load all GitCode pull requests in the selected status and filter them by counted labels.
@@ -16,6 +16,8 @@
   if (window.__gcprAllPagesLabelsInstalled) return;
   window.__gcprAllPagesLabelsInstalled = true;
 
+  const VERSION = "1.2.0";
+  const LAYOUT_CLASS = "gcpr-label-layout";
   const API_ORIGIN = "https://web-api.gitcode.com";
   const API_PATH = "/issuepr/api/v1/merge_requests";
   const PAGE_SIZE = 100;
@@ -97,8 +99,11 @@
     const style = document.createElement("style");
     style.id = STYLE_ID;
     style.textContent =
-      "#" + TOOLBAR_ID + "{display:flex;align-items:center;gap:14px;width:100%;min-width:0;box-sizing:border-box;margin:0 0 8px}" +
-      "#" + TOOLBAR_ID + " .collab-status-tabs{flex:0 0 auto;min-width:max-content}" +
+      "." + LAYOUT_CLASS + "{display:flex!important;flex-direction:row!important;flex-wrap:wrap!important;align-items:center;gap:14px;min-width:0}" +
+      "." + LAYOUT_CLASS + ">*{flex:0 0 100%;min-width:0;max-width:100%;box-sizing:border-box}" +
+      "." + LAYOUT_CLASS + ">.collab-status-tabs{flex:0 1 auto!important;width:auto!important;min-width:0!important;max-width:100%!important}" +
+      "." + LAYOUT_CLASS + ">#" + TOOLBAR_ID + "{flex:1 1 320px!important;width:auto!important;min-width:min(100%,280px)!important;max-width:100%!important}" +
+      "#" + TOOLBAR_ID + "{display:flex;align-items:center;box-sizing:border-box;margin:0;min-height:34px}" +
       "#" + TOOLBAR_ID + " .gcpr-label-strip{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0;overflow:hidden}" +
       "#" + TOOLBAR_ID + " .gcpr-label-heading{display:flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;font-size:12px;color:var(--theme-text-weak,#656d76)}" +
       "#" + TOOLBAR_ID + " .gcpr-label-items{display:flex;align-items:center;gap:6px;flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;padding:3px 1px;scrollbar-width:thin}" +
@@ -112,8 +117,7 @@
       "#" + STATUS_ID + "{margin:0 0 10px;color:var(--theme-text-weak,#656d76);font-size:12px}" +
       ".pd-pulls .list-item--pull." + HIDDEN_CLASS + "{display:none!important}" +
       ".pd-pulls .issue-pagination." + PAGER_HIDDEN_CLASS + "{display:none!important}" +
-      ".pd-pulls .list-surface." + LIST_LOADING_CLASS + "{display:none!important}" +
-      "@media(max-width:900px){#" + TOOLBAR_ID + "{align-items:flex-start;flex-direction:column;gap:8px}#" + TOOLBAR_ID + " .gcpr-label-strip{width:100%}}";
+      ".pd-pulls .list-surface." + LIST_LOADING_CLASS + "{display:none!important}";
     document.head.append(style);
   }
 
@@ -122,7 +126,8 @@
     lastStatusKind = kind || "info";
     const status = document.getElementById(STATUS_ID);
     if (!status) return;
-    status.textContent = lastStatusMessage;
+    status.textContent = lastStatusMessage + " · v" + VERSION;
+    status.dataset.version = VERSION;
     status.dataset.kind = lastStatusKind;
   }
 
@@ -159,6 +164,8 @@
     const tabs = main?.querySelector(".collab-status-tabs");
     if (!main || !tabs) return null;
     addStyles();
+    const layout = tabs.parentElement;
+    layout.classList.add(LAYOUT_CLASS);
 
     let toolbar = main.querySelector("#" + TOOLBAR_ID);
     let rebuilt = false;
@@ -167,7 +174,7 @@
       toolbar.id = TOOLBAR_ID;
       toolbar.setAttribute("role", "group");
       toolbar.setAttribute("aria-label", "按 label 筛选完整 PR 列表");
-      main.insertBefore(toolbar, tabs);
+      toolbar.dataset.version = VERSION;
       rebuilt = true;
     }
 
@@ -179,7 +186,9 @@
       rebuilt = true;
     }
 
-    if (tabs.parentElement !== toolbar) toolbar.prepend(tabs);
+    if (toolbar.previousElementSibling !== tabs || toolbar.parentElement !== layout) {
+      tabs.insertAdjacentElement("afterend", toolbar);
+    }
 
     if (toolbar.dataset.gcprEventsBound !== "true") {
       toolbar.dataset.gcprEventsBound = "true";
@@ -367,8 +376,13 @@
       title.className = "list-item-title-link";
       title.textContent = record.title;
       title.href = pathHref(record.projectPath, "pull/" + record.iid);
-      simple.append(title);
+      const titleBox = document.createElement("div");
+      titleBox.className = "list-item-title";
+      titleBox.append(title);
+      for (const label of record.labels) titleBox.append(createLabelTag(label));
+      simple.append(titleBox);
       simple.dataset.gcprGenerated = "true";
+      simple.dataset.gcprKey = record.key;
       return simple;
     }
 
@@ -656,6 +670,7 @@
     chromeQueued = false;
     if (!location.pathname.startsWith("/dashboard/pulls")) {
       document.getElementById(TOOLBAR_ID)?.remove();
+      for (const node of document.querySelectorAll("." + LAYOUT_CLASS)) node.classList.remove(LAYOUT_CLASS);
       document.getElementById(STATUS_ID)?.remove();
       getList()?.classList.remove(LIST_LOADING_CLASS);
       document.querySelector(".issue-pagination")?.classList.remove(PAGER_HIDDEN_CLASS);
