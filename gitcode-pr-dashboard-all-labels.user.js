@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitCode PR Dashboard: All Pages + Labels
 // @namespace    https://github.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript
-// @version      1.6.0
+// @version      1.7.0
 // @updateURL    https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
 // @downloadURL  https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
 // @description  Load all GitCode pull requests in the selected status and filter by labels and repositories with include/exclude states, linked counts, and dark mode.
@@ -16,7 +16,7 @@
   if (window.__gcprAllPagesLabelsInstalled) return;
   window.__gcprAllPagesLabelsInstalled = true;
 
-  const VERSION = "1.6.0";
+  const VERSION = "1.7.0";
   const LAYOUT_CLASS = "gcpr-label-layout";
   const API_ORIGIN = "https://web-api.gitcode.com";
   const API_PATH = "/issuepr/api/v1/merge_requests";
@@ -35,7 +35,7 @@
   const excludedLabels = new Set();
   const excludedRepositories = new Set();
   const filters = {
-    label: {title:"Label", description:"label", selected:selectedLabels, excluded:excludedLabels},
+    label: {title:"标签", description:"标签", selected:selectedLabels, excluded:excludedLabels},
     repository: {title:"仓库", description:"仓库", selected:selectedRepositories, excluded:excludedRepositories}
   };
   const stateNames = {neutral:"不限", include:"包含", exclude:"排除"};
@@ -47,6 +47,10 @@
   let requestObserver;
   let domObserver;
   let themeObserver;
+  let sizeObserver;
+  let sizedToolbar = null;
+  let optionQuery = "";
+  const expandedFilters = new Set();
   let themeTargets = [];
   let colorContext = null;
   let templateRow = null;
@@ -55,7 +59,7 @@
   let loadedRequestKey = "";
   let loadedState = "";
   let loadedRecords = [];
-  let lastStatusMessage = "正在请求当前状态的全部 PR 页面…";
+  let lastStatusMessage = "等待列表…";
   let lastStatusKind = "info";
   let currentController = null;
   let generation = 0;
@@ -128,34 +132,68 @@
         --gcpr-exclude-bg:#4b2026;--gcpr-exclude-text:#ffb8b0;--gcpr-exclude-border:#f5827b;
         color-scheme:dark;
       }
-      .${LAYOUT_CLASS}{display:flex!important;flex-direction:row!important;flex-wrap:wrap!important;align-items:center;gap:14px;min-width:0}
+      .${LAYOUT_CLASS}{display:flex!important;flex-direction:row!important;flex-wrap:wrap!important;align-items:center;gap:12px;min-width:0}
       .${LAYOUT_CLASS}>*{flex:0 0 100%;min-width:0;max-width:100%;box-sizing:border-box}
       .${LAYOUT_CLASS}>.collab-status-tabs{flex:0 1 auto!important;width:auto!important;min-width:0!important;max-width:100%!important}
       .${LAYOUT_CLASS}>#${TOOLBAR_ID}{flex:0 0 100%!important;width:100%!important;min-width:0!important;max-width:100%!important}
-      #${TOOLBAR_ID}{display:flex;flex-direction:column;align-items:stretch;gap:8px;box-sizing:border-box;margin:0;min-height:34px}
-      #${TOOLBAR_ID} .gcpr-filter-strip{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0;overflow:hidden}
-      #${TOOLBAR_ID} .gcpr-filter-heading{display:flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;font-size:12px;color:var(--gcpr-muted)}
-      #${TOOLBAR_ID} .gcpr-filter-items{display:flex;align-items:center;gap:6px;flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;padding:4px 3px;scrollbar-width:thin;scrollbar-color:var(--gcpr-border) transparent}
-      #${TOOLBAR_ID} .gcpr-filter-pill{display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;max-width:260px;border:1px solid var(--gcpr-border);border-radius:999px;padding:4px 9px;background:var(--gcpr-bg);color:var(--gcpr-text);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}
-      #${TOOLBAR_ID} .gcpr-filter-pill[data-state="neutral"]:hover:not(:disabled){border-color:var(--gcpr-hover-border);background:var(--gcpr-hover)}
+      #${TOOLBAR_ID}{display:flex;flex-direction:column;gap:8px;box-sizing:border-box;margin:0;padding:10px 12px;border:1px solid var(--gcpr-border);border-radius:9px;background:var(--gcpr-bg);color:var(--gcpr-text);font-size:12px}
+      #${TOOLBAR_ID} [hidden]{display:none!important}
+      #${TOOLBAR_ID} .gcpr-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding-bottom:8px;border-bottom:1px solid var(--gcpr-border);min-width:0}
+      #${TOOLBAR_ID} .gcpr-bar-actions{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+      #${TOOLBAR_ID} .gcpr-option-search{margin-left:auto;width:210px;min-width:100px;max-width:32%;box-sizing:border-box;border:1px solid var(--gcpr-border);border-radius:6px;padding:5px 8px;background:transparent;color:var(--gcpr-text);font:inherit;line-height:18px}
+      #${TOOLBAR_ID} .gcpr-option-search::placeholder{color:var(--gcpr-muted);opacity:.8}
+      #${TOOLBAR_ID} .gcpr-filter-strip{display:grid;grid-template-columns:46px minmax(0,1fr) auto;align-items:start;gap:8px;min-width:0}
+      #${TOOLBAR_ID} .gcpr-filter-heading{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding-top:3px;color:var(--gcpr-muted);font-weight:600;line-height:16px}
+      #${TOOLBAR_ID} .gcpr-filter-heading>span+span{font-size:10px;font-weight:400;opacity:.75;font-variant-numeric:tabular-nums;line-height:12px}
+      #${TOOLBAR_ID} .gcpr-filter-items{display:flex;align-items:center;gap:5px;min-width:0;overflow-x:auto;overflow-y:hidden;padding:3px;scrollbar-width:thin;scrollbar-color:var(--gcpr-border) transparent}
+      #${TOOLBAR_ID} .gcpr-filter-strip[data-expanded="true"] .gcpr-filter-items{flex-wrap:wrap;max-height:192px;overflow-x:hidden;overflow-y:auto;align-content:flex-start}
+      #${TOOLBAR_ID} .gcpr-filter-actions{display:flex;align-items:center;gap:3px;padding-top:3px}
+      #${TOOLBAR_ID} .gcpr-filter-pill{display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;max-width:min(270px,100%);min-height:28px;box-sizing:border-box;border:1px solid transparent;border-radius:6px;padding:3px 7px;background:var(--gcpr-hover);color:var(--gcpr-text);font:inherit;line-height:18px;white-space:nowrap;cursor:pointer}
+      #${TOOLBAR_ID} .gcpr-filter-pill[data-state="neutral"]:hover:not(:disabled){border-color:var(--gcpr-hover-border)}
       #${TOOLBAR_ID} .gcpr-filter-pill[data-state="include"]{border-color:var(--gcpr-include-border);background:var(--gcpr-include-bg);color:var(--gcpr-include-text)}
       #${TOOLBAR_ID} .gcpr-filter-pill[data-state="exclude"]{border-color:var(--gcpr-exclude-border);background:var(--gcpr-exclude-bg);color:var(--gcpr-exclude-text)}
       #${TOOLBAR_ID} .gcpr-filter-pill[data-state="exclude"] .gcpr-filter-name{text-decoration:line-through}
-      #${TOOLBAR_ID} button:focus-visible{outline:2px solid var(--gcpr-focus);outline-offset:1px}
-      #${TOOLBAR_ID} .gcpr-filter-pill:disabled{opacity:.55;cursor:not-allowed}
-      #${TOOLBAR_ID} .gcpr-filter-state{flex:0 0 1em;text-align:center;font-weight:700}
-      #${TOOLBAR_ID} .gcpr-filter-name{overflow:hidden;text-overflow:ellipsis}
-      #${TOOLBAR_ID} .gcpr-filter-count{font-size:11px;font-weight:700;opacity:.95}
-      #${TOOLBAR_ID} .gcpr-filter-clear{flex:0 0 auto;border:0;background:transparent;color:var(--gcpr-muted);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}
-      #${TOOLBAR_ID} .gcpr-filter-clear[hidden]{display:none}
-      #${TOOLBAR_ID} .gcpr-filter-help{color:var(--gcpr-muted);font-size:12px;line-height:1.6}
-      #${TOOLBAR_ID} .gcpr-export-json{flex:0 0 auto;border:1px solid var(--gcpr-border);border-radius:6px;padding:4px 9px;background:var(--gcpr-bg);color:var(--gcpr-text);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}
-      #${TOOLBAR_ID} .gcpr-export-json:hover:not(:disabled){background:var(--gcpr-hover);border-color:var(--gcpr-hover-border)}
-      #${TOOLBAR_ID} .gcpr-export-json:disabled{opacity:.55;cursor:not-allowed}
-      #${STATUS_ID}{margin:0 0 10px;color:var(--gcpr-muted);font-size:12px}
+      #${TOOLBAR_ID} :is(button,input,summary):focus-visible{outline:2px solid var(--gcpr-focus);outline-offset:1px}
+      #${TOOLBAR_ID} button:disabled{opacity:.5;cursor:not-allowed}
+      #${TOOLBAR_ID} .gcpr-filter-state{flex:0 0 10px;text-align:center;font-weight:700}
+      #${TOOLBAR_ID} .gcpr-filter-pill[data-state="neutral"] .gcpr-filter-state{opacity:.35;font-size:10px}
+      #${TOOLBAR_ID} .gcpr-filter-name{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis}
+      #${TOOLBAR_ID} .gcpr-filter-pill[data-filter="repository"] .gcpr-filter-name{display:flex}
+      #${TOOLBAR_ID} .gcpr-repo-namespace{max-width:100px;overflow:hidden;text-overflow:ellipsis;opacity:.65}
+      #${TOOLBAR_ID} .gcpr-repo-name{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:500}
+      #${TOOLBAR_ID} .gcpr-filter-count{flex:0 0 auto;font-size:10px;opacity:.65;font-variant-numeric:tabular-nums}
+      #${TOOLBAR_ID} :is(.gcpr-filter-clear,.gcpr-filter-more,.gcpr-reset,.gcpr-retry,.gcpr-export-json){flex:0 0 auto;border:1px solid transparent;border-radius:5px;padding:4px 7px;background:transparent;color:var(--gcpr-muted);font:inherit;line-height:18px;white-space:nowrap;cursor:pointer}
+      #${TOOLBAR_ID} :is(.gcpr-filter-clear,.gcpr-filter-more,.gcpr-reset,.gcpr-retry,.gcpr-export-json):hover:not(:disabled){background:var(--gcpr-hover);color:var(--gcpr-text)}
+      #${TOOLBAR_ID} .gcpr-filter-clear{width:26px;padding:3px;font-size:17px}
+      #${TOOLBAR_ID} .gcpr-filter-more{font-size:11px;padding:3px 5px}
+      #${TOOLBAR_ID} .gcpr-export-json{border-color:var(--gcpr-border);color:var(--gcpr-text)}
+      #${TOOLBAR_ID} .gcpr-help{position:relative;flex:0 0 auto}
+      #${TOOLBAR_ID} .gcpr-help>summary{display:grid;place-items:center;box-sizing:border-box;width:28px;height:28px;border-radius:5px;list-style:none;color:var(--gcpr-muted);cursor:pointer}
+      #${TOOLBAR_ID} .gcpr-help>summary::-webkit-details-marker{display:none}
+      #${TOOLBAR_ID} .gcpr-help>summary:hover{background:var(--gcpr-hover);color:var(--gcpr-text)}
+      #${TOOLBAR_ID} .gcpr-help-content{position:absolute;right:0;top:calc(100% + 6px);z-index:20;width:max-content;max-width:min(330px,80vw);box-sizing:border-box;padding:10px 12px;border:1px solid var(--gcpr-border);border-radius:7px;background:var(--gcpr-bg);color:var(--gcpr-text);line-height:1.8;box-shadow:0 4px 16px #0002}
+      #${TOOLBAR_ID} .gcpr-filter-empty{color:var(--gcpr-muted);line-height:28px}
+      #${STATUS_ID}{display:flex;align-items:center;gap:7px;flex:0 1 auto;min-width:90px;white-space:nowrap;font-size:12px;line-height:28px;color:var(--gcpr-muted);font-variant-numeric:tabular-nums}
+      #${STATUS_ID}::before{content:"";width:5px;height:5px;flex:0 0 auto;border-radius:50%;background:currentColor;opacity:.6}
+      #${STATUS_ID}[data-kind="complete"]{color:var(--gcpr-text);font-weight:500}
+      #${STATUS_ID}[data-kind="error"]{color:var(--gcpr-exclude-text)}
+      #${STATUS_ID}[data-kind="loading"]::before{animation:gcpr-pulse 1s ease-in-out infinite alternate}
+      @keyframes gcpr-pulse{to{opacity:.15}}
+      @media(prefers-reduced-motion:reduce){#${STATUS_ID}::before{animation:none!important}}
+      @media(max-width:700px){
+        #${TOOLBAR_ID}{padding:9px;gap:6px}
+        #${TOOLBAR_ID} .gcpr-bar{flex-wrap:wrap;gap:6px}
+        #${TOOLBAR_ID} .gcpr-bar-actions{margin-left:auto}
+        #${TOOLBAR_ID} .gcpr-option-search{order:3;max-width:none;width:100%;margin-left:0}
+        #${TOOLBAR_ID} .gcpr-filter-strip{grid-template-columns:36px minmax(0,1fr) auto;gap:5px}
+        #${TOOLBAR_ID} .gcpr-filter-pill{max-width:min(240px,100%)}
+        #${TOOLBAR_ID} .gcpr-repo-namespace{max-width:65px}
+      }
       .pd-pulls .list-item--pull.${HIDDEN_CLASS}{display:none!important}
       .pd-pulls .issue-pagination.${PAGER_HIDDEN_CLASS}{display:none!important}
       .pd-pulls .list-surface.${LIST_LOADING_CLASS}{display:none!important}
+      .pd-pulls .gcpr-result-empty{padding:40px 12px;text-align:center;opacity:.65;font-size:13px}
+      .pd-pulls .gcpr-result-empty[hidden]{display:none!important}
     `;
     document.head.append(style);
   }
@@ -262,49 +300,176 @@
     lastStatusKind = kind || "info";
     if (previousKind !== lastStatusKind) renderFilterPills(loadedRecords);
     updateExportButton();
+  }
+
+  function updateToolbarSummary() {
+    const toolbar = document.getElementById(TOOLBAR_ID);
     const status = document.getElementById(STATUS_ID);
-    if (!status) return;
-    status.textContent = lastStatusMessage + " · v" + VERSION;
+    if (!toolbar || !status) return;
+    const ready = canExportCurrentList();
+    const text = ready
+      ? filteredRecords().length.toLocaleString() + " / " + loadedRecords.length.toLocaleString() + " 条"
+      : lastStatusKind === "error" ? "加载失败" : lastStatusMessage;
+    if (status.textContent !== text) status.textContent = text;
+    const kind = ready ? "complete" : loading ? "loading" : lastStatusKind;
+    if (status.dataset.kind !== kind) status.dataset.kind = kind;
     status.dataset.version = VERSION;
-    status.dataset.kind = lastStatusKind;
+    const title = ready ? "匹配 / 已加载 PR" : lastStatusMessage;
+    if (status.title !== title) status.title = title;
+    const active = Object.values(filters).some((filter) => filter.selected.size || filter.excluded.size);
+    const reset = toolbar.querySelector(".gcpr-reset");
+    if (reset && reset.hidden !== !active) reset.hidden = !active;
+    const retry = toolbar.querySelector(".gcpr-retry");
+    const failed = lastStatusKind === "error" && !loading;
+    if (retry && retry.hidden !== !failed) retry.hidden = !failed;
+  }
+
+  function createToolbarHeader() {
+    const bar = document.createElement("div");
+    bar.className = "gcpr-bar";
+    const status = document.createElement("span");
+    status.id = STATUS_ID;
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    const search = document.createElement("input");
+    search.type = "search";
+    search.className = "gcpr-option-search";
+    search.placeholder = "查找标签或仓库";
+    search.setAttribute("aria-label", "查找筛选项，不改变 PR 筛选条件");
+    search.title = "仅查找筛选项；已选条件始终显示";
+    search.autocomplete = "off";
+    search.spellcheck = false;
+    search.value = optionQuery;
+    const actions = document.createElement("div");
+    actions.className = "gcpr-bar-actions";
+    for (const [className, text, title] of [
+      ["gcpr-reset", "重置", "清除全部筛选"],
+      ["gcpr-retry", "重试", "重新加载当前列表"],
+      ["gcpr-export-json", "导出 JSON", "导出筛选后的 PR"]
+    ]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = className;
+      button.textContent = text;
+      button.title = title;
+      if (className !== "gcpr-export-json") button.hidden = true;
+      else button.disabled = true;
+      actions.append(button);
+    }
+    const help = document.createElement("details");
+    help.className = "gcpr-help";
+    const summary = document.createElement("summary");
+    summary.textContent = "?";
+    summary.setAttribute("aria-label", "筛选帮助");
+    summary.title = "筛选帮助";
+    const content = document.createElement("div");
+    content.className = "gcpr-help-content";
+    for (const line of ["点击循环：不限 → 包含 → 排除 → 不限", "Shift + 点击：直接排除 / 取消排除", "→ 数字：普通点击后的结果数", "多个标签需同时具有；多个仓库任选其一"]) {
+      const row = document.createElement("div");
+      row.textContent = line;
+      content.append(row);
+    }
+    help.append(summary, content);
+    actions.append(help);
+    bar.append(status, search, actions);
+    return bar;
   }
 
   function createFilterStrip(kind) {
     const filter = filters[kind];
     const strip = document.createElement("div");
     strip.className = "gcpr-filter-strip gcpr-" + kind + "-strip";
-
+    strip.dataset.filter = kind;
+    strip.dataset.expanded = String(expandedFilters.has(kind));
     const heading = document.createElement("div");
     heading.className = "gcpr-filter-heading";
     const title = document.createElement("span");
     title.textContent = filter.title;
-    const loaded = document.createElement("span");
-    loaded.className = "gcpr-" + kind + "-loaded";
-    heading.append(title, loaded);
-
+    const count = document.createElement("span");
+    count.className = "gcpr-" + kind + "-loaded";
+    heading.append(title, count);
     const items = document.createElement("div");
     items.className = "gcpr-filter-items gcpr-" + kind + "-items";
+    items.id = TOOLBAR_ID + "-" + kind;
     items.setAttribute("role", "group");
-    items.setAttribute("aria-label", "PR " + filter.description + " 及命中数量");
-
+    items.setAttribute("aria-label", "按" + filter.title + "筛选");
+    const actions = document.createElement("div");
+    actions.className = "gcpr-filter-actions";
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "gcpr-filter-more";
+    more.dataset.filter = kind;
+    more.setAttribute("aria-controls", items.id);
+    more.hidden = true;
     const clear = document.createElement("button");
     clear.className = "gcpr-filter-clear gcpr-" + kind + "-clear";
     clear.type = "button";
     clear.dataset.filter = kind;
-    clear.setAttribute("aria-label", "清除所有" + filter.description + "筛选");
+    clear.setAttribute("aria-label", "清除" + filter.title + "筛选");
+    clear.title = "清除" + filter.title + "筛选";
     clear.hidden = true;
-    clear.textContent = "清除";
-    strip.append(heading, items, clear);
-
-    if (kind === "label") {
-      const exportButton = document.createElement("button");
-      exportButton.className = "gcpr-export-json";
-      exportButton.type = "button";
-      exportButton.disabled = true;
-      exportButton.textContent = "导出 JSON";
-      strip.append(exportButton);
-    }
+    clear.textContent = "×";
+    actions.append(more, clear);
+    strip.append(heading, items, actions);
     return strip;
+  }
+
+  function updateOverflow() {
+    const toolbar = document.getElementById(TOOLBAR_ID);
+    if (!toolbar) return;
+    for (const kind of Object.keys(filters)) {
+      const strip = toolbar.querySelector(".gcpr-" + kind + "-strip");
+      const items = strip?.querySelector(".gcpr-filter-items");
+      const more = strip?.querySelector(".gcpr-filter-more");
+      if (!items || !more) continue;
+      const expanded = expandedFilters.has(kind);
+      const value = String(expanded);
+      if (strip.dataset.expanded !== value) strip.dataset.expanded = value;
+      const overflow = items.scrollWidth > items.clientWidth + 2;
+      const text = expanded ? "收起" : "展开";
+      if (more.textContent !== text) more.textContent = text;
+      const hidden = !expanded && !overflow;
+      if (more.hidden !== hidden) more.hidden = hidden;
+      if (more.getAttribute("aria-expanded") !== value) more.setAttribute("aria-expanded", value);
+      const label = (expanded ? "收起" : "展开") + filters[kind].title;
+      if (more.getAttribute("aria-label") !== label) more.setAttribute("aria-label", label);
+    }
+  }
+
+  function applyOptionSearch() {
+    const toolbar = document.getElementById(TOOLBAR_ID);
+    if (!toolbar) return;
+    const query = normalize(optionQuery);
+    const focused = document.activeElement;
+    for (const kind of Object.keys(filters)) {
+      const items = toolbar.querySelector(".gcpr-" + kind + "-items");
+      const count = toolbar.querySelector(".gcpr-" + kind + "-loaded");
+      if (!items || !count) continue;
+      const pills = [...items.querySelectorAll(".gcpr-filter-pill")];
+      let visible = 0;
+      for (const pill of pills) {
+        const show = !query || pill.dataset.search.includes(query) || pill.dataset.state !== "neutral";
+        if (pill.hidden !== !show) pill.hidden = !show;
+        if (show) visible += 1;
+      }
+      const label = query ? visible + "/" + pills.length : String(pills.length);
+      if (count.textContent !== label) count.textContent = label;
+      const title = query ? "显示 / 全部选项（含已选条件）" : pills.length + " 个" + filters[kind].title;
+      if (count.title !== title) count.title = title;
+      let empty = items.querySelector(".gcpr-search-empty");
+      if (pills.length && !empty) {
+        empty = document.createElement("span");
+        empty.className = "gcpr-filter-empty gcpr-search-empty";
+        empty.textContent = "无匹配项";
+        items.append(empty);
+      }
+      if (empty) {
+        const hidden = visible > 0 || !query || !pills.length;
+        if (empty.hidden !== hidden) empty.hidden = hidden;
+      }
+    }
+    if (focused?.matches(".gcpr-filter-pill") && focused.hidden) toolbar.querySelector(".gcpr-option-search").focus();
+    updateOverflow();
   }
 
   function ensureControls() {
@@ -314,49 +479,79 @@
     addStyles();
     const layout = tabs.parentElement;
     if (!layout.classList.contains(LAYOUT_CLASS)) layout.classList.add(LAYOUT_CLASS);
-
     let toolbar = main.querySelector("#" + TOOLBAR_ID);
     let rebuilt = false;
     if (!toolbar) {
       toolbar = document.createElement("div");
       toolbar.id = TOOLBAR_ID;
       toolbar.setAttribute("role", "group");
-      toolbar.setAttribute("aria-label", "按 label 和仓库筛选完整 PR 列表");
+      toolbar.setAttribute("aria-label", "PR 筛选");
       toolbar.dataset.version = VERSION;
       rebuilt = true;
     }
-
+    let header = toolbar.querySelector(".gcpr-bar");
+    if (!header || !header.querySelector("#" + STATUS_ID) || !header.querySelector(".gcpr-option-search") || !header.querySelector(".gcpr-export-json")) {
+      header?.remove();
+      header = createToolbarHeader();
+      toolbar.prepend(header);
+      rebuilt = true;
+    } else if (toolbar.firstElementChild !== header) toolbar.prepend(header);
     for (const kind of Object.keys(filters)) {
       const strip = toolbar.querySelector(".gcpr-" + kind + "-strip");
       if (!strip || !strip.querySelector(".gcpr-" + kind + "-items") ||
           !strip.querySelector(".gcpr-" + kind + "-loaded") || !strip.querySelector(".gcpr-" + kind + "-clear") ||
-          (kind === "label" && !strip.querySelector(".gcpr-export-json"))) {
+          !strip.querySelector(".gcpr-filter-more")) {
         strip?.remove();
-        const replacement = createFilterStrip(kind);
-        if (kind === "label") toolbar.prepend(replacement);
-        else toolbar.append(replacement);
+        toolbar.append(createFilterStrip(kind));
         rebuilt = true;
       }
     }
-
-    let help = toolbar.querySelector(".gcpr-filter-help");
-    if (!help) {
-      help = document.createElement("div");
-      help.className = "gcpr-filter-help";
-      help.textContent = "点击循环：○ 不限 → + 包含 → − 排除 → ○ 不限；→ 数字为下次点击后的条数";
-    }
-    if (toolbar.lastElementChild !== help) toolbar.append(help);
-
-    if (toolbar.previousElementSibling !== tabs || toolbar.parentElement !== layout) {
-      tabs.insertAdjacentElement("afterend", toolbar);
-    }
+    const labelStrip = toolbar.querySelector(".gcpr-label-strip");
+    const repoStrip = toolbar.querySelector(".gcpr-repository-strip");
+    if (labelStrip.previousElementSibling !== header) header.insertAdjacentElement("afterend", labelStrip);
+    if (repoStrip.previousElementSibling !== labelStrip) labelStrip.insertAdjacentElement("afterend", repoStrip);
+    if (toolbar.previousElementSibling !== tabs || toolbar.parentElement !== layout) tabs.insertAdjacentElement("afterend", toolbar);
 
     if (toolbar.dataset.gcprEventsBound !== "true") {
       toolbar.dataset.gcprEventsBound = "true";
+      toolbar.addEventListener("input", (event) => {
+        if (!event.target.matches(".gcpr-option-search")) return;
+        optionQuery = event.target.value;
+        applyOptionSearch();
+      });
+      toolbar.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        const help = toolbar.querySelector(".gcpr-help");
+        if (event.target.matches(".gcpr-option-search") && optionQuery) {
+          optionQuery = "";
+          event.target.value = "";
+          applyOptionSearch();
+          event.preventDefault();
+        } else if (help?.open) {
+          help.open = false;
+          help.querySelector("summary").focus();
+          event.preventDefault();
+        }
+      });
       toolbar.addEventListener("click", (event) => {
         if (!(event.target instanceof Element)) return;
-        if (event.target.closest(".gcpr-export-json")) {
-          exportCurrentList();
+        if (event.target.closest(".gcpr-export-json")) { exportCurrentList(); return; }
+        if (event.target.closest(".gcpr-reset")) {
+          for (const filter of Object.values(filters)) { filter.selected.clear(); filter.excluded.clear(); }
+          optionQuery = "";
+          toolbar.querySelector(".gcpr-option-search").value = "";
+          renderFilterPills(loadedRecords);
+          applyFilters();
+          toolbar.querySelector(".gcpr-option-search").focus();
+          return;
+        }
+        if (event.target.closest(".gcpr-retry")) { ensureActiveDataset(true); return; }
+        const more = event.target.closest(".gcpr-filter-more");
+        if (more) {
+          const kind = more.dataset.filter;
+          if (expandedFilters.has(kind)) expandedFilters.delete(kind);
+          else expandedFilters.add(kind);
+          updateOverflow();
           return;
         }
         const clear = event.target.closest(".gcpr-filter-clear");
@@ -367,6 +562,7 @@
           filter.excluded.clear();
           renderFilterPills(loadedRecords);
           applyFilters();
+          toolbar.querySelector(".gcpr-option-search").focus();
           return;
         }
         const pill = event.target.closest(".gcpr-filter-pill");
@@ -376,31 +572,21 @@
         const value = pill.dataset.value;
         const state = filterState(filter, value);
         if (!canExportCurrentList() && state === "neutral") return;
-        setFilterState(filter, value, nextStates[state]);
+        const next = event.detail > 0 && event.shiftKey ? (state === "exclude" ? "neutral" : "exclude") : nextStates[state];
+        setFilterState(filter, value, next);
         renderFilterPills(loadedRecords);
         applyFilters();
       });
     }
-
-    let status = document.getElementById(STATUS_ID);
-    if (!status) {
-      status = document.createElement("div");
-      status.id = STATUS_ID;
-      status.setAttribute("role", "status");
-      status.setAttribute("aria-live", "polite");
-      toolbar.insertAdjacentElement("afterend", status);
-      setStatus(lastStatusMessage, lastStatusKind);
-    } else if (status.previousElementSibling !== toolbar) {
-      toolbar.insertAdjacentElement("afterend", status);
+    if (sizedToolbar !== toolbar) {
+      sizeObserver?.disconnect();
+      if (!sizeObserver) sizeObserver = new ResizeObserver(scheduleChrome);
+      sizeObserver.observe(toolbar);
+      sizedToolbar = toolbar;
     }
-
-    if (rebuilt || toolbar.dataset.gcprFiltersKey !== loadedRequestKey) {
-      renderFilterPills(loadedRecords);
-      if (loadedRequestKey && loadedState === getActiveState()) {
-        setStatus(lastStatusMessage, lastStatusKind);
-      }
-    }
+    if (rebuilt || toolbar.dataset.gcprFiltersKey !== loadedRequestKey) renderFilterPills(loadedRecords);
     updateExportButton();
+    updateOverflow();
     syncTheme();
     return toolbar;
   }
@@ -513,14 +699,9 @@
       if (!items || !loaded || !clear) continue;
       const entries = counts[kind];
       const active = filter.selected.size + filter.excluded.size;
-      const selection = active ? " · 含 " + filter.selected.size + " / 排 " + filter.excluded.size : " · 不限";
-      const summary = !ready ? (loading ? "正在加载…" : "等待完整列表") : kind === "label"
-        ? "命中 " + counts.matching + " / " + records.length + " 条" + selection
-        : "共 " + entries.length + " 个" + selection;
-      if (loaded.textContent !== summary) loaded.textContent = summary;
 
       if (!entries.length) {
-        const message = loading ? "正在读取" + filter.description + "…" : "当前列表没有" + filter.description;
+        const message = loading ? "加载中…" : "暂无选项";
         let empty = items.querySelector(".gcpr-filter-empty");
         if (!empty || items.children.length !== 1) {
           empty = document.createElement("span");
@@ -555,17 +736,31 @@
           // All ready options, including zero counts, must allow cycling into exclusion.
           const disabled = !ready && state === "neutral";
           if (pill.disabled !== disabled) pill.disabled = disabled;
-          const description = name + "；当前：" + stateNames[state] + "；下次点击：" + stateNames[next] + "；" + (ready
-            ? "点击后命中 " + count + " 条 PR；该项原始数量 " + total + " 条"
-            : "等待当前列表完整加载，数量暂不可用");
+          const description = name + " · " + stateNames[state] + " → " + stateNames[next] + (ready
+            ? " · " + count.toLocaleString() + " 条（原始 " + total.toLocaleString() + "）"
+            : loading ? " · 加载中" : lastStatusKind === "error" ? " · 加载失败，请重试" : " · 等待加载");
           if (pill.title !== description) pill.title = description;
           if (pill.getAttribute("aria-label") !== description) pill.setAttribute("aria-label", description);
           const marker = pill.querySelector(".gcpr-filter-state");
           if (marker.textContent !== stateSymbols[state]) marker.textContent = stateSymbols[state];
           const text = pill.querySelector(".gcpr-filter-name");
-          if (text.textContent !== name) text.textContent = name;
+          const slash = kind === "repository" ? name.lastIndexOf("/") : -1;
+          if (text.dataset.name !== name) {
+            if (slash >= 0) {
+              const namespace = document.createElement("span");
+              namespace.className = "gcpr-repo-namespace";
+              namespace.textContent = name.slice(0, slash + 1);
+              const repository = document.createElement("span");
+              repository.className = "gcpr-repo-name";
+              repository.textContent = name.slice(slash + 1);
+              text.replaceChildren(namespace, repository);
+            } else text.textContent = name;
+            text.dataset.name = name;
+          }
+          const search = normalize(name);
+          if (pill.dataset.search !== search) pill.dataset.search = search;
           const badge = pill.querySelector(".gcpr-filter-count");
-          const countText = ready ? "→" + count : "—";
+          const countText = ready ? "→" + count.toLocaleString() : "—";
           if (badge.textContent !== countText) badge.textContent = countText;
           desired.push(pill);
         }
@@ -576,6 +771,7 @@
       }
       if (clear.hidden !== (active === 0)) clear.hidden = active === 0;
     }
+    applyOptionSearch();
     updateExportButton();
   }
 
@@ -740,11 +936,12 @@
     const button = document.querySelector("#" + TOOLBAR_ID + " .gcpr-export-json");
     if (!button) return;
     const ready = canExportCurrentList();
-    const text = ready ? "导出 JSON（" + filteredRecords().length + "）" : "导出 JSON";
-    const title = ready ? "导出当前 label 和仓库筛选后的完整 PR 列表" : "请等待当前列表完整加载";
+    const text = "导出 JSON";
+    const title = ready ? "导出筛选后的 PR" : "加载完成后可导出";
     if (button.disabled !== !ready) button.disabled = !ready;
     if (button.textContent !== text) button.textContent = text;
     if (button.title !== title) button.title = title;
+    updateToolbarSummary();
   }
 
   function exportCurrentList() {
@@ -782,6 +979,12 @@
         row.classList.toggle(HIDDEN_CLASS, !matchesFilters(projectPath, labels));
       }
     }
+    const empty = list.querySelector(".gcpr-result-empty");
+    if (empty) {
+      const message = loadedRecords.length ? "没有符合条件的 PR" : "暂无 PR";
+      if (empty.textContent !== message) empty.textContent = message;
+      if (empty.hidden !== (matchingKeys.size > 0)) empty.hidden = matchingKeys.size > 0;
+    }
     updateExportButton();
   }
 
@@ -793,6 +996,10 @@
 
     const fragment = document.createDocumentFragment();
     for (const record of records) fragment.append(makeRow(record));
+    const empty = document.createElement("div");
+    empty.className = "gcpr-result-empty";
+    empty.hidden = true;
+    fragment.append(empty);
     list.replaceChildren(fragment);
     list.dataset.gcprFullLoaded = "true";
     list.dataset.gcprQueryKey = key;
@@ -873,7 +1080,7 @@
   async function fetchDataset(baseUrl, requestGeneration, signal) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (requestGeneration !== generation) return null;
-      setStatus(attempt ? "列表数据发生变化，重新读取并校验…" : "正在读取第一页…", "loading");
+      setStatus(attempt ? "列表有变化，重新读取…" : "读取第 1 页…", "loading");
       const pages = new Map();
       const first = await fetchPage(baseUrl, 1, signal);
       pages.set(1, first);
@@ -892,13 +1099,12 @@
           total = batch[i].total;
         }
         completed += batch.length;
-        const collected = [...pages.values()].reduce((sum, page) => sum + page.records.length, 0);
-        setStatus("正在读取第 " + completed + " / " + pageCount + " 页 · 已取得 " + collected + " / " + total + " 条", "loading");
+        setStatus("加载 " + completed + "/" + pageCount + " 页", "loading");
         await delay(120);
       }
 
       if (requestGeneration !== generation) return null;
-      setStatus("正在校验总数…", "loading");
+      setStatus("校验列表…", "loading");
       const confirmation = await fetchPage(baseUrl, 1, signal);
       const drifted = confirmation.total !== total || confirmation.pageCount !== pageCount ||
         !samePage(first.records, confirmation.records);
@@ -933,7 +1139,7 @@
     loading = true;
     templateRow = document.querySelector(".list-item--pull")?.cloneNode(true) || templateRow;
     labelTemplate = document.querySelector(".g-label-tag")?.cloneNode(true) || labelTemplate;
-    setLoadingUi("正在后台加载当前状态的全部 PR 页面…");
+    setLoadingUi("读取列表…");
 
     try {
       const result = await fetchDataset(base.href, requestGeneration, currentController.signal);
@@ -942,7 +1148,7 @@
       loadedState = base.searchParams.get("state") || getActiveState();
       renderRecords(result.records, key);
       loading = false;
-      setStatus("已完整加载 " + result.records.length + " 条 PR，共 " + result.pageCount + " 页；支持包含/排除筛选，→ 数字为下次点击后的条数", "complete");
+      setStatus("已加载 " + result.records.length + " 条", "complete");
     } catch (error) {
       if (requestGeneration !== generation) return;
       loading = false;
@@ -969,16 +1175,17 @@
     loadAllPages(rawUrl);
   }
 
-  function ensureActiveDataset() {
+  function ensureActiveDataset(force = false) {
     if (!location.pathname.startsWith("/dashboard/pulls")) return;
     const state = getActiveState();
-    if (loadedState === state && loadedRequestKey) return;
+    if (!force && loadedState === state && loadedRequestKey) return;
     const template = requestTemplates.get(state) || requestTemplates.values().next().value;
     if (!template) return;
     const url = new URL(template);
     url.searchParams.set("state", state);
     url.searchParams.set("page", "1");
     url.searchParams.set("per_page", String(PAGE_SIZE));
+    if (force) loadedRequestKey = "";
     loadAllPages(url.href);
   }
 
@@ -994,6 +1201,8 @@
     if (!location.pathname.startsWith("/dashboard/pulls")) {
       themeObserver?.disconnect();
       themeTargets = [];
+      sizeObserver?.disconnect();
+      sizedToolbar = null;
       document.getElementById(TOOLBAR_ID)?.remove();
       for (const node of document.querySelectorAll("." + LAYOUT_CLASS)) node.classList.remove(LAYOUT_CLASS);
       document.getElementById(STATUS_ID)?.remove();
@@ -1026,7 +1235,10 @@
     domObserver = new MutationObserver(scheduleChrome);
     domObserver.observe(document.documentElement, {childList:true,subtree:true,characterData:true});
     document.addEventListener("click", (event) => {
-      if (event.target instanceof Element && event.target.closest(".pd-pulls .collab-status-tabs [role='tab']")) handleRouteChange();
+      if (!(event.target instanceof Element)) return;
+      if (event.target.closest(".pd-pulls .collab-status-tabs [role='tab']")) handleRouteChange();
+      const help = document.querySelector("#" + TOOLBAR_ID + " .gcpr-help");
+      if (help?.open && !help.contains(event.target)) help.open = false;
     });
     window.addEventListener("popstate", handleRouteChange);
     systemTheme.addEventListener("change", scheduleChrome);

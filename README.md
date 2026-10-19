@@ -1,32 +1,34 @@
-# GitCode PR Dashboard: All Pages + Labels + Repositories
+# GitCode PR Dashboard
 
-Tampermonkey userscript for the GitCode pull request dashboard.
+油猴脚本：完整加载 PR 列表，按标签和仓库筛选。当前版本：**1.7.0**。
 
-## Features
+## 安装
 
-- Requests every page for the selected status in the background (`per_page=100`).
-- Replaces the paged list with the complete live result set and hides native pagination.
-- Shows every label found in the full result set with its PR count, in a dedicated full-width row below the native status tabs.
-- Each label and repository button cycles through **Neutral → Include → Exclude → Neutral**, with visible symbols (`○`, `+`, `−`), distinct colors, and an accessible state description. Each row's clear action removes both include and exclude selections.
-- Included labels use AND; excluded labels must all be absent. Included repositories use OR (none selected means all); excluded repositories are always removed. The two dimensions are combined using AND.
-- Shows repositories by full namespace/path in a dedicated row below labels.
-- Live badges show **→ N**, the final number of PRs after the button's next click, considering every include/exclude condition in both dimensions. The header shows the current final matching count and total loaded count; tooltips also show each option's unfiltered count.
-- Zero-result buttons remain clickable so they can reach the exclusion state. Options retain their order, focus, and scroll as selections change. During loading, counts show a dash, existing conditions can still be cycled or cleared, and new conditions/export are disabled.
-- Follows the actual GitCode page background for light/dark palettes, with separate include/exclude colors, readable text/borders, and keyboard focus styles. It responds to site theme changes and uses the system preference only as a fallback.
-- The full option set remains visible. Label keys are case-insensitive and each PR is counted once per label. Conditions absent from a newly loaded result set are removed.
-- Exports the complete currently label- and repository-filtered list as a JSON array, including PR links; export stays disabled until loading finishes.
-- Keeps the current GitCode search, scope, sort, and status parameters.
-- Rechecks the first page and total before rendering; if the dataset changes or a request fails, the native paginated view is restored.
+1. 安装 Tampermonkey，打开[脚本安装链接](https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js)。
+2. 安装或更新脚本，停用旧的独立分页、标签插件。
+3. 刷新 [GitCode PR 列表](https://gitcode.com/dashboard/pulls)。
 
-## Installation
+## 使用
 
-1. Install Tampermonkey.
-2. Open the raw userscript: <https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js>
-3. Install or update the script.
-4. Disable any previously installed separate pagination and label-filter scripts so only the combined script runs.
-5. Open <https://gitcode.com/dashboard/pulls> and refresh the page. The loading status includes the installed script version (currently `v1.6.0`).
+- 顶部显示“匹配数 / 已加载数”；**导出 JSON** 保存当前筛选结果及 PR 链接。
+- 按钮循环切换：**○ 不限 → + 包含 → − 排除 → ○ 不限**。Shift + 点击可直接排除或取消排除；键盘激活按普通循环切换。
+- 按钮上的 **→ N** 是普通点击后最终匹配的 PR 数，同时考虑两级筛选；悬停可查看该选项的原始数量。
+- 搜索框只查找标签和仓库选项，已选条件始终保留。Esc 清空搜索文字。
+- 选项过多时可展开；行末 **×** 清除该行条件，顶部**重置**清除两级条件和搜索文字。
+- **?** 打开操作说明；界面随页面切换明暗主题。
 
-The script uses the existing GitCode login session in the page. It does not store or log the access token.
+| 筛选 | 包含 | 排除 |
+| --- | --- | --- |
+| 标签 | 必须同时具有所有选中标签 | 不能具有任何排除标签 |
+| 仓库 | 属于任一选中仓库 | 去掉排除仓库 |
+
+两级筛选取交集。未设置包含条件时，该维度不限；切换列表后不存在的条件会自动清除。
+
+## 数据加载
+
+保留 GitCode 当前状态、搜索、范围和排序，在后台逐页读取（每页 100 条），完成后隐藏分页。加载期间禁止新增条件和导出，已有条件仍可切换或清除。
+
+脚本核对首尾总数、第一页和完整页集；失败时显示重试入口，恢复原列表/分页。仅使用当前页面的登录会话，不保存或记录访问令牌。
 
 ## License
 
