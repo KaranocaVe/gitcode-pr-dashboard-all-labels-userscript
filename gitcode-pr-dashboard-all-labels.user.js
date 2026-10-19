@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         GitCode PR Dashboard: All Pages + Labels
 // @namespace    https://github.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript
-// @version      1.3.0
+// @version      1.4.0
 // @updateURL    https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
 // @downloadURL  https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
-// @description  Load all GitCode pull requests in the selected status and filter them by counted labels.
+// @description  Load all GitCode pull requests in the selected status and filter them by counted labels and repositories.
 // @match        https://gitcode.com/dashboard/pulls*
 // @run-at       document-idle
 // @grant        none
@@ -16,7 +16,7 @@
   if (window.__gcprAllPagesLabelsInstalled) return;
   window.__gcprAllPagesLabelsInstalled = true;
 
-  const VERSION = "1.3.0";
+  const VERSION = "1.4.0";
   const LAYOUT_CLASS = "gcpr-label-layout";
   const API_ORIGIN = "https://web-api.gitcode.com";
   const API_PATH = "/issuepr/api/v1/merge_requests";
@@ -31,6 +31,11 @@
   const ownRequestUrls = new Set();
   const requestTemplates = new Map();
   const selectedLabels = new Set();
+  const selectedRepositories = new Set();
+  const filters = {
+    label: {title:"Label", description:"label", selected:selectedLabels},
+    repository: {title:"仓库", description:"仓库", selected:selectedRepositories}
+  };
 
   let requestObserver;
   let domObserver;
@@ -103,17 +108,17 @@
       "." + LAYOUT_CLASS + ">*{flex:0 0 100%;min-width:0;max-width:100%;box-sizing:border-box}" +
       "." + LAYOUT_CLASS + ">.collab-status-tabs{flex:0 1 auto!important;width:auto!important;min-width:0!important;max-width:100%!important}" +
       "." + LAYOUT_CLASS + ">#" + TOOLBAR_ID + "{flex:0 0 100%!important;width:100%!important;min-width:0!important;max-width:100%!important}" +
-      "#" + TOOLBAR_ID + "{display:flex;align-items:center;box-sizing:border-box;margin:0;min-height:34px}" +
-      "#" + TOOLBAR_ID + " .gcpr-label-strip{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0;overflow:hidden}" +
-      "#" + TOOLBAR_ID + " .gcpr-label-heading{display:flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;font-size:12px;color:var(--theme-text-weak,#656d76)}" +
-      "#" + TOOLBAR_ID + " .gcpr-label-items{display:flex;align-items:center;gap:6px;flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;padding:3px 1px;scrollbar-width:thin}" +
-      "#" + TOOLBAR_ID + " .gcpr-label-pill{display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;max-width:240px;border:1px solid var(--theme-border,#d0d7de);border-radius:999px;padding:4px 9px;background:var(--theme-bg,#fff);color:var(--theme-text,#24292f);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}" +
-      "#" + TOOLBAR_ID + " .gcpr-label-pill:hover{border-color:#8ab4f8;background:#f6f9ff}" +
-      "#" + TOOLBAR_ID + " .gcpr-label-pill[aria-pressed='true']{border-color:#2865e0;background:#e8f0fe;color:#174ea6}" +
-      "#" + TOOLBAR_ID + " .gcpr-label-name{overflow:hidden;text-overflow:ellipsis}" +
-      "#" + TOOLBAR_ID + " .gcpr-label-count{font-size:11px;font-weight:700;opacity:.9}" +
-      "#" + TOOLBAR_ID + " .gcpr-label-clear{flex:0 0 auto;border:0;background:transparent;color:var(--theme-text-weak,#656d76);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}" +
-      "#" + TOOLBAR_ID + " .gcpr-label-clear[hidden]{display:none}" +
+      "#" + TOOLBAR_ID + "{display:flex;flex-direction:column;align-items:stretch;gap:8px;box-sizing:border-box;margin:0;min-height:34px}" +
+      "#" + TOOLBAR_ID + " .gcpr-filter-strip{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0;overflow:hidden}" +
+      "#" + TOOLBAR_ID + " .gcpr-filter-heading{display:flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;font-size:12px;color:var(--theme-text-weak,#656d76)}" +
+      "#" + TOOLBAR_ID + " .gcpr-filter-items{display:flex;align-items:center;gap:6px;flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;padding:3px 1px;scrollbar-width:thin}" +
+      "#" + TOOLBAR_ID + " .gcpr-filter-pill{display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;max-width:240px;border:1px solid var(--theme-border,#d0d7de);border-radius:999px;padding:4px 9px;background:var(--theme-bg,#fff);color:var(--theme-text,#24292f);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}" +
+      "#" + TOOLBAR_ID + " .gcpr-filter-pill:hover{border-color:#8ab4f8;background:#f6f9ff}" +
+      "#" + TOOLBAR_ID + " .gcpr-filter-pill[aria-pressed='true']{border-color:#2865e0;background:#e8f0fe;color:#174ea6}" +
+      "#" + TOOLBAR_ID + " .gcpr-filter-name{overflow:hidden;text-overflow:ellipsis}" +
+      "#" + TOOLBAR_ID + " .gcpr-filter-count{font-size:11px;font-weight:700;opacity:.9}" +
+      "#" + TOOLBAR_ID + " .gcpr-filter-clear{flex:0 0 auto;border:0;background:transparent;color:var(--theme-text-weak,#656d76);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}" +
+      "#" + TOOLBAR_ID + " .gcpr-filter-clear[hidden]{display:none}" +
       "#" + TOOLBAR_ID + " .gcpr-export-json{flex:0 0 auto;border:1px solid var(--theme-border,#d0d7de);border-radius:6px;padding:4px 9px;background:var(--theme-bg,#fff);color:var(--theme-text,#24292f);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}" +
       "#" + TOOLBAR_ID + " .gcpr-export-json:disabled{opacity:.5;cursor:not-allowed}" +
       "#" + STATUS_ID + "{margin:0 0 10px;color:var(--theme-text-weak,#656d76);font-size:12px}" +
@@ -134,37 +139,41 @@
     status.dataset.kind = lastStatusKind;
   }
 
-  function createLabelStrip() {
+  function createFilterStrip(kind) {
+    const filter = filters[kind];
     const strip = document.createElement("div");
-    strip.className = "gcpr-label-strip";
+    strip.className = "gcpr-filter-strip gcpr-" + kind + "-strip";
 
     const heading = document.createElement("div");
-    heading.className = "gcpr-label-heading";
+    heading.className = "gcpr-filter-heading";
     const title = document.createElement("span");
-    title.textContent = "Label";
+    title.textContent = filter.title;
     const loaded = document.createElement("span");
-    loaded.className = "gcpr-label-loaded";
+    loaded.className = "gcpr-" + kind + "-loaded";
     heading.append(title, loaded);
 
     const items = document.createElement("div");
-    items.className = "gcpr-label-items";
+    items.className = "gcpr-filter-items gcpr-" + kind + "-items";
     items.setAttribute("role", "group");
-    items.setAttribute("aria-label", "PR label 及命中数量");
+    items.setAttribute("aria-label", "PR " + filter.description + " 及命中数量");
 
     const clear = document.createElement("button");
-    clear.className = "gcpr-label-clear";
+    clear.className = "gcpr-filter-clear gcpr-" + kind + "-clear";
     clear.type = "button";
-    clear.setAttribute("aria-label", "清除所有 label 筛选");
+    clear.dataset.filter = kind;
+    clear.setAttribute("aria-label", "清除所有" + filter.description + "筛选");
     clear.hidden = true;
     clear.textContent = "清除";
+    strip.append(heading, items, clear);
 
-    const exportButton = document.createElement("button");
-    exportButton.className = "gcpr-export-json";
-    exportButton.type = "button";
-    exportButton.disabled = true;
-    exportButton.textContent = "导出 JSON";
-
-    strip.append(heading, items, clear, exportButton);
+    if (kind === "label") {
+      const exportButton = document.createElement("button");
+      exportButton.className = "gcpr-export-json";
+      exportButton.type = "button";
+      exportButton.disabled = true;
+      exportButton.textContent = "导出 JSON";
+      strip.append(exportButton);
+    }
     return strip;
   }
 
@@ -182,18 +191,22 @@
       toolbar = document.createElement("div");
       toolbar.id = TOOLBAR_ID;
       toolbar.setAttribute("role", "group");
-      toolbar.setAttribute("aria-label", "按 label 筛选完整 PR 列表");
+      toolbar.setAttribute("aria-label", "按 label 和仓库筛选完整 PR 列表");
       toolbar.dataset.version = VERSION;
       rebuilt = true;
     }
 
-    const labelStrip = toolbar.querySelector(".gcpr-label-strip");
-    if (!labelStrip || !labelStrip.querySelector(".gcpr-label-items") ||
-        !labelStrip.querySelector(".gcpr-label-loaded") || !labelStrip.querySelector(".gcpr-label-clear") ||
-        !labelStrip.querySelector(".gcpr-export-json")) {
-      labelStrip?.remove();
-      toolbar.append(createLabelStrip());
-      rebuilt = true;
+    for (const kind of Object.keys(filters)) {
+      const strip = toolbar.querySelector(".gcpr-" + kind + "-strip");
+      if (!strip || !strip.querySelector(".gcpr-" + kind + "-items") ||
+          !strip.querySelector(".gcpr-" + kind + "-loaded") || !strip.querySelector(".gcpr-" + kind + "-clear") ||
+          (kind === "label" && !strip.querySelector(".gcpr-export-json"))) {
+        strip?.remove();
+        const replacement = createFilterStrip(kind);
+        if (kind === "label") toolbar.prepend(replacement);
+        else toolbar.append(replacement);
+        rebuilt = true;
+      }
     }
 
     if (toolbar.previousElementSibling !== tabs || toolbar.parentElement !== layout) {
@@ -207,20 +220,24 @@
           exportCurrentList();
           return;
         }
-        const clear = event.target.closest(".gcpr-label-clear");
+        const clear = event.target.closest(".gcpr-filter-clear");
         if (clear) {
-          selectedLabels.clear();
-          renderLabelPills(loadedRecords);
-          applyLabelFilter();
+          const filter = filters[clear.dataset.filter];
+          if (!filter) return;
+          filter.selected.clear();
+          renderFilterPills(loadedRecords);
+          applyFilters();
           return;
         }
-        const pill = event.target.closest(".gcpr-label-pill");
+        const pill = event.target.closest(".gcpr-filter-pill");
         if (!pill) return;
-        const label = pill.getAttribute("data-label");
-        if (selectedLabels.has(label)) selectedLabels.delete(label);
-        else selectedLabels.add(label);
-        renderLabelPills(loadedRecords);
-        applyLabelFilter();
+        const filter = filters[pill.dataset.filter];
+        if (!filter) return;
+        const value = pill.dataset.value;
+        if (filter.selected.has(value)) filter.selected.delete(value);
+        else filter.selected.add(value);
+        renderFilterPills(loadedRecords);
+        applyFilters();
       });
     }
 
@@ -236,8 +253,8 @@
       toolbar.insertAdjacentElement("afterend", status);
     }
 
-    if (rebuilt || toolbar.dataset.gcprLabelsKey !== loadedRequestKey) {
-      renderLabelPills(loadedRecords);
+    if (rebuilt || toolbar.dataset.gcprFiltersKey !== loadedRequestKey) {
+      renderFilterPills(loadedRecords);
       if (loadedRequestKey && loadedState === getActiveState()) {
         setStatus(lastStatusMessage, lastStatusKind);
       }
@@ -298,43 +315,66 @@
     return [...counts].sort((a,b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   }
 
-  function renderLabelPills(records) {
-    const toolbar = document.getElementById(TOOLBAR_ID);
-    const items = toolbar?.querySelector(".gcpr-label-items");
-    const loaded = toolbar?.querySelector(".gcpr-label-loaded");
-    const clear = toolbar?.querySelector(".gcpr-label-clear");
-    if (!toolbar || !items || !loaded || !clear) return;
+  function repositoryKey(projectPath) {
+    return String(projectPath || "").trim();
+  }
 
-    const labels = summarizeLabels(records || []);
-    toolbar.dataset.gcprLabelsKey = loadedRequestKey;
-    loaded.textContent = records.length ? "当前 " + records.length + " 条" : "暂无 PR";
-    items.replaceChildren();
-
-    if (!labels.length) {
-      const empty = document.createElement("span");
-      empty.className = "gcpr-label-name";
-      empty.textContent = loading ? "正在读取 label…" : "当前列表没有 label";
-      items.append(empty);
-    } else {
-      for (const [name, count] of labels) {
-        const pill = document.createElement("button");
-        pill.type = "button";
-        pill.className = "gcpr-label-pill";
-        pill.setAttribute("data-label", name);
-        pill.setAttribute("aria-pressed", String(selectedLabels.has(name)));
-        pill.setAttribute("aria-label", name + "，当前完整列表中 " + count + " 条 PR");
-        pill.title = name + " · 当前完整列表中 " + count + " 条 PR";
-        const labelText = document.createElement("span");
-        labelText.className = "gcpr-label-name";
-        labelText.textContent = name;
-        const labelCount = document.createElement("span");
-        labelCount.className = "gcpr-label-count";
-        labelCount.textContent = String(count);
-        pill.append(labelText, labelCount);
-        items.append(pill);
-      }
+  function summarizeRepositories(records) {
+    const counts = new Map();
+    for (const record of records) {
+      const value = repositoryKey(record.projectPath);
+      const entry = counts.get(value) || {value, name:record.projectPath || "未知仓库", count:0};
+      entry.count += 1;
+      counts.set(value, entry);
     }
-    clear.hidden = selectedLabels.size === 0;
+    return [...counts.values()].sort((a,b) => b.count - a.count || a.name.localeCompare(b.name));
+  }
+
+  function renderFilterPills(records) {
+    const toolbar = document.getElementById(TOOLBAR_ID);
+    if (!toolbar) return;
+    toolbar.dataset.gcprFiltersKey = loadedRequestKey;
+
+    for (const [kind, filter] of Object.entries(filters)) {
+      const items = toolbar.querySelector(".gcpr-" + kind + "-items");
+      const loaded = toolbar.querySelector(".gcpr-" + kind + "-loaded");
+      const clear = toolbar.querySelector(".gcpr-" + kind + "-clear");
+      if (!items || !loaded || !clear) continue;
+      const entries = kind === "label"
+        ? summarizeLabels(records).map(([name, count]) => ({value:name, name, count}))
+        : summarizeRepositories(records);
+      loaded.textContent = kind === "label"
+        ? (records.length ? "当前 " + records.length + " 条" : "暂无 PR")
+        : "共 " + entries.length + " 个" + (filter.selected.size ? " · 已选 " + filter.selected.size + " 个" : " · 全部");
+      items.replaceChildren();
+
+      if (!entries.length) {
+        const empty = document.createElement("span");
+        empty.className = "gcpr-filter-name";
+        empty.textContent = loading ? "正在读取" + filter.description + "…" : "当前列表没有" + filter.description;
+        items.append(empty);
+      } else {
+        for (const {value, name, count} of entries) {
+          const pill = document.createElement("button");
+          pill.type = "button";
+          pill.className = "gcpr-filter-pill";
+          pill.dataset.filter = kind;
+          pill.dataset.value = value;
+          pill.setAttribute("aria-pressed", String(filter.selected.has(value)));
+          pill.setAttribute("aria-label", name + "，当前完整列表中 " + count + " 条 PR");
+          pill.title = name + " · 当前完整列表中 " + count + " 条 PR";
+          const text = document.createElement("span");
+          text.className = "gcpr-filter-name";
+          text.textContent = name;
+          const badge = document.createElement("span");
+          badge.className = "gcpr-filter-count";
+          badge.textContent = String(count);
+          pill.append(text, badge);
+          items.append(pill);
+        }
+      }
+      clear.hidden = filter.selected.size === 0;
+    }
     updateExportButton();
   }
 
@@ -485,8 +525,13 @@
     return [...selectedLabels].every((label) => labels.has(normalize(label)));
   }
 
+  function matchesFilters(projectPath, labelNames) {
+    return (selectedRepositories.size === 0 || selectedRepositories.has(repositoryKey(projectPath))) &&
+      matchesSelectedLabels(labelNames);
+  }
+
   function filteredRecords() {
-    return loadedRecords.filter((record) => matchesSelectedLabels(record.labels.map((label) => label.name)));
+    return loadedRecords.filter((record) => matchesFilters(record.projectPath, record.labels.map((label) => label.name)));
   }
 
   function canExportCurrentList() {
@@ -501,7 +546,7 @@
     if (!button) return;
     const ready = canExportCurrentList();
     const text = ready ? "导出 JSON（" + filteredRecords().length + "）" : "导出 JSON";
-    const title = ready ? "导出当前 label 筛选后的完整 PR 列表" : "请等待当前列表完整加载";
+    const title = ready ? "导出当前 label 和仓库筛选后的完整 PR 列表" : "请等待当前列表完整加载";
     if (button.disabled !== !ready) button.disabled = !ready;
     if (button.textContent !== text) button.textContent = text;
     if (button.title !== title) button.title = title;
@@ -529,12 +574,18 @@
     }
   }
 
-  function applyLabelFilter() {
+  function applyFilters() {
     const list = getList();
     if (!list) return;
+    const matchingKeys = new Set(filteredRecords().map((record) => record.key));
     for (const row of list.querySelectorAll(".list-item--pull")) {
-      const labels = [...row.querySelectorAll(".g-label-tag-text")].map((node) => node.getAttribute("title") || node.textContent);
-      row.classList.toggle(HIDDEN_CLASS, !matchesSelectedLabels(labels));
+      if (row.dataset.gcprGenerated === "true") {
+        row.classList.toggle(HIDDEN_CLASS, !matchingKeys.has(row.dataset.gcprKey));
+      } else {
+        const labels = [...row.querySelectorAll(".g-label-tag-text")].map((node) => node.getAttribute("title") || node.textContent);
+        const projectPath = row.querySelector(".meta-repo")?.textContent || "";
+        row.classList.toggle(HIDDEN_CLASS, !matchesFilters(projectPath, labels));
+      }
     }
     updateExportButton();
   }
@@ -553,8 +604,17 @@
     list.classList.remove(LIST_LOADING_CLASS);
     document.querySelector(".issue-pagination")?.classList.add(PAGER_HIDDEN_CLASS);
     loadedRecords = records;
-    renderLabelPills(records);
-    applyLabelFilter();
+    const availableFilters = {
+      label: new Set(records.flatMap((record) => record.labels.map((label) => label.name))),
+      repository: new Set(records.map((record) => repositoryKey(record.projectPath)))
+    };
+    for (const [kind, filter] of Object.entries(filters)) {
+      for (const selected of filter.selected) {
+        if (!availableFilters[kind].has(selected)) filter.selected.delete(selected);
+      }
+    }
+    renderFilterPills(records);
+    applyFilters();
   }
 
   function setLoadingUi(message) {
