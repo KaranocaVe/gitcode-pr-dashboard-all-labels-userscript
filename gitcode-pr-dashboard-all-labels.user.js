@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         GitCode PR Dashboard: All Pages + Labels
 // @namespace    https://github.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript
-// @version      1.4.0
+// @version      1.5.0
 // @updateURL    https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
 // @downloadURL  https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
-// @description  Load all GitCode pull requests in the selected status and filter them by counted labels and repositories.
+// @description  Load all GitCode pull requests in the selected status and filter them by labels and repositories with live linked counts.
 // @match        https://gitcode.com/dashboard/pulls*
 // @run-at       document-idle
 // @grant        none
@@ -16,7 +16,7 @@
   if (window.__gcprAllPagesLabelsInstalled) return;
   window.__gcprAllPagesLabelsInstalled = true;
 
-  const VERSION = "1.4.0";
+  const VERSION = "1.5.0";
   const LAYOUT_CLASS = "gcpr-label-layout";
   const API_ORIGIN = "https://web-api.gitcode.com";
   const API_PATH = "/issuepr/api/v1/merge_requests";
@@ -113,8 +113,9 @@
       "#" + TOOLBAR_ID + " .gcpr-filter-heading{display:flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;font-size:12px;color:var(--theme-text-weak,#656d76)}" +
       "#" + TOOLBAR_ID + " .gcpr-filter-items{display:flex;align-items:center;gap:6px;flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;padding:3px 1px;scrollbar-width:thin}" +
       "#" + TOOLBAR_ID + " .gcpr-filter-pill{display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;max-width:240px;border:1px solid var(--theme-border,#d0d7de);border-radius:999px;padding:4px 9px;background:var(--theme-bg,#fff);color:var(--theme-text,#24292f);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}" +
-      "#" + TOOLBAR_ID + " .gcpr-filter-pill:hover{border-color:#8ab4f8;background:#f6f9ff}" +
+      "#" + TOOLBAR_ID + " .gcpr-filter-pill:hover:not(:disabled){border-color:#8ab4f8;background:#f6f9ff}" +
       "#" + TOOLBAR_ID + " .gcpr-filter-pill[aria-pressed='true']{border-color:#2865e0;background:#e8f0fe;color:#174ea6}" +
+      "#" + TOOLBAR_ID + " .gcpr-filter-pill:disabled{opacity:.4;cursor:not-allowed}" +
       "#" + TOOLBAR_ID + " .gcpr-filter-name{overflow:hidden;text-overflow:ellipsis}" +
       "#" + TOOLBAR_ID + " .gcpr-filter-count{font-size:11px;font-weight:700;opacity:.9}" +
       "#" + TOOLBAR_ID + " .gcpr-filter-clear{flex:0 0 auto;border:0;background:transparent;color:var(--theme-text-weak,#656d76);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}" +
@@ -129,8 +130,10 @@
   }
 
   function setStatus(message, kind) {
+    const previousKind = lastStatusKind;
     lastStatusMessage = message;
     lastStatusKind = kind || "info";
+    if (previousKind !== lastStatusKind) renderFilterPills(loadedRecords);
     updateExportButton();
     const status = document.getElementById(STATUS_ID);
     if (!status) return;
@@ -230,7 +233,7 @@
           return;
         }
         const pill = event.target.closest(".gcpr-filter-pill");
-        if (!pill) return;
+        if (!pill || pill.disabled) return;
         const filter = filters[pill.dataset.filter];
         if (!filter) return;
         const value = pill.dataset.value;
@@ -310,9 +313,17 @@
   function summarizeLabels(records) {
     const counts = new Map();
     for (const record of records) {
-      for (const label of record.labels) counts.set(label.name, (counts.get(label.name) || 0) + 1);
+      const seen = new Set();
+      for (const label of record.labels) {
+        const value = normalize(label.name);
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        const entry = counts.get(value) || {value, name:label.name, count:0};
+        entry.count += 1;
+        counts.set(value, entry);
+      }
     }
-    return [...counts].sort((a,b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    return [...counts.values()].sort((a,b) => b.count - a.count || a.name.localeCompare(b.name));
   }
 
   function repositoryKey(projectPath) {
@@ -330,50 +341,103 @@
     return [...counts.values()].sort((a,b) => b.count - a.count || a.name.localeCompare(b.name));
   }
 
+  function summarizeFilterCounts(records) {
+    const labels = new Map();
+    const repositories = new Map();
+    let matching = 0;
+    for (const record of records) {
+      const names = record.labels.map((label) => label.name);
+      if (!matchesSelectedLabels(names)) continue;
+      const repository = repositoryKey(record.projectPath);
+      // Repositories use OR: count each repository independently of that selection.
+      repositories.set(repository, (repositories.get(repository) || 0) + 1);
+      if (!matchesSelectedRepository(record.projectPath)) continue;
+      matching += 1;
+      // Labels use AND: each badge predicts the result of adding that label.
+      for (const name of new Set(names.map(normalize))) {
+        labels.set(name, (labels.get(name) || 0) + 1);
+      }
+    }
+    return {labels, repositories, matching};
+  }
+
   function renderFilterPills(records) {
     const toolbar = document.getElementById(TOOLBAR_ID);
     if (!toolbar) return;
     toolbar.dataset.gcprFiltersKey = loadedRequestKey;
+    const counts = summarizeFilterCounts(records);
+    const ready = canExportCurrentList();
 
     for (const [kind, filter] of Object.entries(filters)) {
       const items = toolbar.querySelector(".gcpr-" + kind + "-items");
       const loaded = toolbar.querySelector(".gcpr-" + kind + "-loaded");
       const clear = toolbar.querySelector(".gcpr-" + kind + "-clear");
       if (!items || !loaded || !clear) continue;
-      const entries = kind === "label"
-        ? summarizeLabels(records).map(([name, count]) => ({value:name, name, count}))
-        : summarizeRepositories(records);
-      loaded.textContent = kind === "label"
-        ? (records.length ? "当前 " + records.length + " 条" : "暂无 PR")
-        : "共 " + entries.length + " 个" + (filter.selected.size ? " · 已选 " + filter.selected.size + " 个" : " · 全部");
-      items.replaceChildren();
+      // Keep the full option set and its ordering while only the counts change.
+      const totals = kind === "label" ? summarizeLabels(records) : summarizeRepositories(records);
+      const linkedCounts = kind === "label" ? counts.labels : counts.repositories;
+      const entries = totals.map((entry) => ({...entry, total:entry.count, count:linkedCounts.get(entry.value) || 0}));
+      const summary = !ready ? (loading ? "正在加载…" : "等待完整列表") : kind === "label"
+        ? "命中 " + counts.matching + " / " + records.length + " 条"
+        : "匹配 " + entries.filter((entry) => entry.count > 0).length + " / " + entries.length + " 个" +
+          (filter.selected.size ? " · 已选 " + filter.selected.size + " 个" : " · 全部");
+      if (loaded.textContent !== summary) loaded.textContent = summary;
 
       if (!entries.length) {
-        const empty = document.createElement("span");
-        empty.className = "gcpr-filter-name";
-        empty.textContent = loading ? "正在读取" + filter.description + "…" : "当前列表没有" + filter.description;
-        items.append(empty);
-      } else {
-        for (const {value, name, count} of entries) {
-          const pill = document.createElement("button");
-          pill.type = "button";
-          pill.className = "gcpr-filter-pill";
-          pill.dataset.filter = kind;
-          pill.dataset.value = value;
-          pill.setAttribute("aria-pressed", String(filter.selected.has(value)));
-          pill.setAttribute("aria-label", name + "，当前完整列表中 " + count + " 条 PR");
-          pill.title = name + " · 当前完整列表中 " + count + " 条 PR";
-          const text = document.createElement("span");
-          text.className = "gcpr-filter-name";
-          text.textContent = name;
-          const badge = document.createElement("span");
-          badge.className = "gcpr-filter-count";
-          badge.textContent = String(count);
-          pill.append(text, badge);
-          items.append(pill);
+        const message = loading ? "正在读取" + filter.description + "…" : "当前列表没有" + filter.description;
+        let empty = items.querySelector(".gcpr-filter-empty");
+        if (!empty || items.children.length !== 1) {
+          empty = document.createElement("span");
+          empty.className = "gcpr-filter-name gcpr-filter-empty";
+          items.replaceChildren(empty);
         }
+        if (empty.textContent !== message) empty.textContent = message;
+      } else {
+        const existing = new Map([...items.querySelectorAll(".gcpr-filter-pill")].map((pill) => [pill.dataset.value, pill]));
+        const desired = [];
+        for (const {value, name, count, total} of entries) {
+          let pill = existing.get(value);
+          if (!pill) {
+            pill = document.createElement("button");
+            pill.type = "button";
+            pill.className = "gcpr-filter-pill";
+            pill.dataset.filter = kind;
+            pill.dataset.value = value;
+            const text = document.createElement("span");
+            text.className = "gcpr-filter-name";
+            text.textContent = name;
+            const badge = document.createElement("span");
+            badge.className = "gcpr-filter-count";
+            pill.append(text, badge);
+          }
+          const selected = filter.selected.has(value);
+          const pressed = String(selected);
+          if (pill.getAttribute("aria-pressed") !== pressed) pill.setAttribute("aria-pressed", pressed);
+          // Selected zero-count options must remain clickable to recover from an empty result.
+          const disabled = (!ready || count === 0) && !selected;
+          if (pill.disabled !== disabled) pill.disabled = disabled;
+          const explanation = kind === "label"
+            ? (selected ? "当前筛选结果 " + count + " 条 PR" : "在当前筛选条件下再选此 label，将命中 " + count + " 条 PR")
+            : "满足已选 label 的该仓库 PR 共 " + count + " 条；多选仓库取并集";
+          const description = name + " · " + (ready
+            ? explanation + "；当前列表总计 " + total + " 条"
+            : "等待当前列表完整加载，数量暂不可用");
+          if (pill.title !== description) pill.title = description;
+          if (pill.getAttribute("aria-label") !== description) pill.setAttribute("aria-label", description);
+          const text = pill.querySelector(".gcpr-filter-name");
+          if (text.textContent !== name) text.textContent = name;
+          const badge = pill.querySelector(".gcpr-filter-count");
+          const countText = ready ? String(count) : "—";
+          if (badge.textContent !== countText) badge.textContent = countText;
+          desired.push(pill);
+        }
+        // Reuse buttons to preserve focus and horizontal scroll on selection changes.
+        for (let index = 0; index < desired.length; index += 1) {
+          if (items.children[index] !== desired[index]) items.insertBefore(desired[index], items.children[index] || null);
+        }
+        while (items.children.length > desired.length) items.lastElementChild.remove();
       }
-      clear.hidden = filter.selected.size === 0;
+      if (clear.hidden !== (filter.selected.size === 0)) clear.hidden = filter.selected.size === 0;
     }
     updateExportButton();
   }
@@ -525,9 +589,12 @@
     return [...selectedLabels].every((label) => labels.has(normalize(label)));
   }
 
+  function matchesSelectedRepository(projectPath) {
+    return selectedRepositories.size === 0 || selectedRepositories.has(repositoryKey(projectPath));
+  }
+
   function matchesFilters(projectPath, labelNames) {
-    return (selectedRepositories.size === 0 || selectedRepositories.has(repositoryKey(projectPath))) &&
-      matchesSelectedLabels(labelNames);
+    return matchesSelectedRepository(projectPath) && matchesSelectedLabels(labelNames);
   }
 
   function filteredRecords() {
@@ -605,7 +672,7 @@
     document.querySelector(".issue-pagination")?.classList.add(PAGER_HIDDEN_CLASS);
     loadedRecords = records;
     const availableFilters = {
-      label: new Set(records.flatMap((record) => record.labels.map((label) => label.name))),
+      label: new Set(records.flatMap((record) => record.labels.map((label) => normalize(label.name)))),
       repository: new Set(records.map((record) => repositoryKey(record.projectPath)))
     };
     for (const [kind, filter] of Object.entries(filters)) {
@@ -620,6 +687,7 @@
   function setLoadingUi(message) {
     ensureControls();
     setStatus(message, "loading");
+    renderFilterPills(loadedRecords);
     getList()?.classList.add(LIST_LOADING_CLASS);
     document.querySelector(".issue-pagination")?.classList.add(PAGER_HIDDEN_CLASS);
   }
