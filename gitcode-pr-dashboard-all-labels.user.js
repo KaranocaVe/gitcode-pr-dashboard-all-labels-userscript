@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitCode PR Dashboard: All Pages + Labels
 // @namespace    https://github.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript
-// @version      1.7.0
+// @version      1.8.0
 // @updateURL    https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
 // @downloadURL  https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
 // @description  Load all GitCode pull requests in the selected status and filter by labels and repositories with include/exclude states, linked counts, and dark mode.
@@ -16,7 +16,7 @@
   if (window.__gcprAllPagesLabelsInstalled) return;
   window.__gcprAllPagesLabelsInstalled = true;
 
-  const VERSION = "1.7.0";
+  const VERSION = "1.8.0";
   const LAYOUT_CLASS = "gcpr-label-layout";
   const API_ORIGIN = "https://web-api.gitcode.com";
   const API_PATH = "/issuepr/api/v1/merge_requests";
@@ -65,11 +65,16 @@
   let generation = 0;
   let loading = false;
   let chromeQueued = false;
+  let overflowQueued = false;
+  let themeDirty = true;
+  let cachedTheme = "";
+  let datasetIndex = null;
+  let filterRevision = 0;
+  let filterViewCache = null;
 
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const getMain = () => document.querySelector(".pd-pulls");
   const getList = () => document.querySelector(".pd-pulls .list-surface");
-  const getRows = () => [...document.querySelectorAll(".pd-pulls .list-item--pull")];
   const normalize = (value) => (value || "").trim().toLocaleLowerCase();
 
   function getActiveState() {
@@ -249,15 +254,19 @@
     if (targets.length !== themeTargets.length || targets.some((node, index) => node !== themeTargets[index])) {
       themeObserver?.disconnect();
       themeTargets = targets;
-      if (!themeObserver) themeObserver = new MutationObserver(scheduleChrome);
+      themeDirty = true;
+      if (!themeObserver) themeObserver = new MutationObserver(scheduleThemeSync);
       for (const node of targets) themeObserver.observe(node, {
         attributes:true,
         attributeFilter:["class", "style", "data-theme", "data-color-mode", "data-bs-theme", "theme"]
       });
     }
-    const theme = pageUsesDarkTheme(targets) ? "dark" : "light";
+    if (themeDirty) {
+      cachedTheme = pageUsesDarkTheme(targets) ? "dark" : "light";
+      themeDirty = false;
+    }
     for (const node of [toolbar, document.getElementById(STATUS_ID)]) {
-      if (node && node.dataset.gcprTheme !== theme) node.dataset.gcprTheme = theme;
+      if (node && node.dataset.gcprTheme !== cachedTheme) node.dataset.gcprTheme = cachedTheme;
     }
   }
 
@@ -265,11 +274,25 @@
     return filter.excluded.has(value) ? "exclude" : filter.selected.has(value) ? "include" : "neutral";
   }
 
+  function invalidateFilters() {
+    filterRevision += 1;
+    filterViewCache = null;
+  }
+
   function setFilterState(filter, value, state) {
+    if (filterState(filter, value) === state) return;
     filter.selected.delete(value);
     filter.excluded.delete(value);
     if (state === "include") filter.selected.add(value);
     if (state === "exclude") filter.excluded.add(value);
+    invalidateFilters();
+  }
+
+  function clearFilter(filter) {
+    if (!filter.selected.size && !filter.excluded.size) return;
+    filter.selected.clear();
+    filter.excluded.clear();
+    invalidateFilters();
   }
 
   function snapshotRecord(record) {
@@ -414,7 +437,7 @@
     return strip;
   }
 
-  function updateOverflow() {
+  function syncFilterExpansion() {
     const toolbar = document.getElementById(TOOLBAR_ID);
     if (!toolbar) return;
     for (const kind of Object.keys(filters)) {
@@ -425,15 +448,26 @@
       const expanded = expandedFilters.has(kind);
       const value = String(expanded);
       if (strip.dataset.expanded !== value) strip.dataset.expanded = value;
-      const overflow = items.scrollWidth > items.clientWidth + 2;
       const text = expanded ? "收起" : "展开";
       if (more.textContent !== text) more.textContent = text;
-      const hidden = !expanded && !overflow;
-      if (more.hidden !== hidden) more.hidden = hidden;
       if (more.getAttribute("aria-expanded") !== value) more.setAttribute("aria-expanded", value);
       const label = (expanded ? "收起" : "展开") + filters[kind].title;
       if (more.getAttribute("aria-label") !== label) more.setAttribute("aria-label", label);
     }
+  }
+
+  function updateOverflow() {
+    const toolbar = document.getElementById(TOOLBAR_ID);
+    if (!toolbar) return;
+    const rows = Object.keys(filters).map((kind) => {
+      const strip = toolbar.querySelector(".gcpr-" + kind + "-strip");
+      return {items:strip?.querySelector(".gcpr-filter-items"), more:strip?.querySelector(".gcpr-filter-more"), expanded:expandedFilters.has(kind)};
+    }).filter(({items, more}) => items && more);
+    // Read together after the expansion layout has rendered, then apply visibility.
+    const hidden = rows.map(({items, expanded}) => !expanded && items.scrollWidth <= items.clientWidth + 2);
+    rows.forEach(({more}, index) => {
+      if (more.hidden !== hidden[index]) more.hidden = hidden[index];
+    });
   }
 
   function applyOptionSearch() {
@@ -469,7 +503,7 @@
       }
     }
     if (focused?.matches(".gcpr-filter-pill") && focused.hidden) toolbar.querySelector(".gcpr-option-search").focus();
-    updateOverflow();
+    scheduleOverflow();
   }
 
   function ensureControls() {
@@ -537,7 +571,7 @@
         if (!(event.target instanceof Element)) return;
         if (event.target.closest(".gcpr-export-json")) { exportCurrentList(); return; }
         if (event.target.closest(".gcpr-reset")) {
-          for (const filter of Object.values(filters)) { filter.selected.clear(); filter.excluded.clear(); }
+          for (const filter of Object.values(filters)) clearFilter(filter);
           optionQuery = "";
           toolbar.querySelector(".gcpr-option-search").value = "";
           renderFilterPills(loadedRecords);
@@ -551,15 +585,14 @@
           const kind = more.dataset.filter;
           if (expandedFilters.has(kind)) expandedFilters.delete(kind);
           else expandedFilters.add(kind);
-          updateOverflow();
+          scheduleOverflow();
           return;
         }
         const clear = event.target.closest(".gcpr-filter-clear");
         if (clear) {
           const filter = filters[clear.dataset.filter];
           if (!filter) return;
-          filter.selected.clear();
-          filter.excluded.clear();
+          clearFilter(filter);
           renderFilterPills(loadedRecords);
           applyFilters();
           toolbar.querySelector(".gcpr-option-search").focus();
@@ -580,13 +613,13 @@
     }
     if (sizedToolbar !== toolbar) {
       sizeObserver?.disconnect();
-      if (!sizeObserver) sizeObserver = new ResizeObserver(scheduleChrome);
+      if (!sizeObserver) sizeObserver = new ResizeObserver(scheduleOverflow);
       sizeObserver.observe(toolbar);
       sizedToolbar = toolbar;
     }
     if (rebuilt || toolbar.dataset.gcprFiltersKey !== loadedRequestKey) renderFilterPills(loadedRecords);
     updateExportButton();
-    updateOverflow();
+    if (rebuilt) scheduleOverflow();
     syncTheme();
     return toolbar;
   }
@@ -666,23 +699,87 @@
     return [...counts.values()].sort((a,b) => b.count - a.count || a.name.localeCompare(b.name));
   }
 
-  function summarizeFilterCounts(records) {
-    const snapshots = records.map(snapshotRecord);
-    const result = {matching:snapshots.filter(matchesSnapshot).length};
-    for (const [kind, filter] of Object.entries(filters)) {
-      const other = kind === "label" ? "repository" : "label";
-      const eligible = snapshots.filter((snapshot) => matchesDimension(other, snapshot));
-      const totals = kind === "label" ? summarizeLabels(records) : summarizeRepositories(records);
-      result[kind] = totals.map((entry) => {
-        const state = filterState(filter, entry.value);
-        const next = nextStates[state];
-        const candidate = {selected:new Set(filter.selected), excluded:new Set(filter.excluded)};
-        setFilterState(candidate, entry.value, next);
-        const count = eligible.reduce((sum, snapshot) => sum + Number(matchesDimension(kind, snapshot, candidate)), 0);
-        return {...entry, total:entry.count, count, state, next};
-      });
+  function getDatasetIndex(records) {
+    if (!datasetIndex || datasetIndex.records !== records) {
+      datasetIndex = {
+        records,
+        snapshots: records.map(snapshotRecord),
+        label: summarizeLabels(records),
+        repository: summarizeRepositories(records)
+      };
     }
-    return result;
+    return datasetIndex;
+  }
+
+  function getFilterView(records = loadedRecords) {
+    const index = getDatasetIndex(records);
+    if (filterViewCache?.index === index && filterViewCache.revision === filterRevision) return filterViewCache;
+    const labels = filters.label;
+    const repositories = filters.repository;
+    const matchingLabels = new Map();
+    const missingOne = new Map();
+    const excludedOne = new Map();
+    const byRepository = new Map();
+    const matching = [];
+    const matchingKeys = new Set();
+    let allowedTotal = 0;
+    const add = (map, value) => map.set(value, (map.get(value) || 0) + 1);
+
+    // Classify each PR once. A single changed label can repair at most one violation.
+    for (let position = 0; position < records.length; position += 1) {
+      const snapshot = index.snapshots[position];
+      let missing = 0;
+      let missingValue;
+      for (const value of labels.selected) {
+        if (!snapshot.labels.has(value)) {
+          missingValue = value;
+          if (++missing === 2) break;
+        }
+      }
+      let excluded = 0;
+      let excludedValue;
+      for (const value of labels.excluded) {
+        if (snapshot.labels.has(value)) {
+          excludedValue = value;
+          if (++excluded === 2) break;
+        }
+      }
+      const labelMatches = missing === 0 && excluded === 0;
+      const repositoryMatches = matchesDimension("repository", snapshot);
+      if (labelMatches) {
+        add(byRepository, snapshot.repository);
+        if (!repositories.excluded.has(snapshot.repository)) allowedTotal += 1;
+        if (repositoryMatches) {
+          matching.push(records[position]);
+          matchingKeys.add(records[position].key);
+          for (const value of snapshot.labels) add(matchingLabels, value);
+        }
+      }
+      if (!repositoryMatches) continue;
+      if (missing === 1 && excluded === 0) add(missingOne, missingValue);
+      if (missing === 0 && excluded === 1) add(excludedOne, excludedValue);
+    }
+
+    const total = matching.length;
+    // Include -> exclude can revive PRs missing exactly that included label.
+    const label = index.label.map((entry) => {
+      const state = filterState(labels, entry.value);
+      const count = state === "neutral" ? matchingLabels.get(entry.value) || 0
+        : state === "include" ? missingOne.get(entry.value) || 0
+        : total + (excludedOne.get(entry.value) || 0);
+      return {...entry, total:entry.count, count, state, next:nextStates[state]};
+    });
+    // Removing the final included repository restores the unrestricted repository scope.
+    const repository = index.repository.map((entry) => {
+      const state = filterState(repositories, entry.value);
+      const own = byRepository.get(entry.value) || 0;
+      const count = state === "neutral" ? (repositories.selected.size ? total + own : own)
+        : state === "include" ? (repositories.selected.size === 1 ? allowedTotal : total) - own
+        : total + (repositories.selected.size ? 0 : own);
+      return {...entry, total:entry.count, count, state, next:nextStates[state]};
+    });
+    filterViewCache = {index, revision:filterRevision, matching, matchingKeys, label, repository};
+    return filterViewCache;
   }
 
   function renderFilterPills(records) {
@@ -690,7 +787,7 @@
     if (!toolbar) return;
     toolbar.dataset.gcprFiltersKey = loadedRequestKey;
     const ready = canExportCurrentList();
-    const counts = summarizeFilterCounts(records);
+    const counts = getFilterView(records);
 
     for (const [kind, filter] of Object.entries(filters)) {
       const items = toolbar.querySelector(".gcpr-" + kind + "-items");
@@ -865,6 +962,8 @@
       const avatar = authorBox.querySelector(".g-avatar__img");
       const avatarUrl = safeAvatarUrl(record.avatarUrl);
       if (avatar) {
+        avatar.loading = "lazy";
+        avatar.decoding = "async";
         avatar.alt = record.authorName;
         if (avatarUrl) avatar.src = avatarUrl;
         else avatar.removeAttribute("src");
@@ -922,7 +1021,7 @@
   }
 
   function filteredRecords() {
-    return loadedRecords.filter((record) => matchesSnapshot(snapshotRecord(record)));
+    return getFilterView().matching;
   }
 
   function canExportCurrentList() {
@@ -969,10 +1068,11 @@
   function applyFilters() {
     const list = getList();
     if (!list) return;
-    const matchingKeys = new Set(filteredRecords().map((record) => record.key));
+    const {matchingKeys} = getFilterView();
     for (const row of list.querySelectorAll(".list-item--pull")) {
       if (row.dataset.gcprGenerated === "true") {
-        row.classList.toggle(HIDDEN_CLASS, !matchingKeys.has(row.dataset.gcprKey));
+        const hidden = !matchingKeys.has(row.dataset.gcprKey);
+        if (row.classList.contains(HIDDEN_CLASS) !== hidden) row.classList.toggle(HIDDEN_CLASS, hidden);
       } else {
         const labels = [...row.querySelectorAll(".g-label-tag-text")].map((node) => node.getAttribute("title") || node.textContent);
         const projectPath = row.querySelector(".meta-repo")?.textContent || "";
@@ -988,14 +1088,44 @@
     updateExportButton();
   }
 
-  function renderRecords(records, key) {
+  function yieldToPage() {
+    if (globalThis.scheduler?.yield) return globalThis.scheduler.yield();
+    return new Promise((resolve) => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => {
+        channel.port1.close();
+        channel.port2.close();
+        resolve();
+      };
+      channel.port2.postMessage(null);
+    });
+  }
+
+  async function renderRecords(records, key, state, requestGeneration) {
     const list = getList();
     if (!list) throw new Error("PR list container not found");
     if (!templateRow) templateRow = document.querySelector(".list-item--pull")?.cloneNode(true) || null;
     if (!labelTemplate) labelTemplate = document.querySelector(".g-label-tag")?.cloneNode(true) || null;
 
     const fragment = document.createDocumentFragment();
-    for (const record of records) fragment.append(makeRow(record));
+    let deadline = performance.now() + 8;
+    for (let position = 0; position < records.length; position += 1) {
+      fragment.append(makeRow(records[position]));
+      if ((position + 1) % 16 === 0 && performance.now() >= deadline) {
+        await yieldToPage();
+        if (requestGeneration !== generation) return false;
+        deadline = performance.now() + 8;
+      }
+    }
+    if (requestGeneration !== generation) return false;
+    if (!location.pathname.startsWith("/dashboard/pulls") || state !== getActiveState()) {
+      cancelLoad();
+      loadedRequestKey = "";
+      loadedState = "";
+      handleRouteChange();
+      return false;
+    }
+    if (getList() !== list) throw new Error("列表容器已变化，请重试");
     const empty = document.createElement("div");
     empty.className = "gcpr-result-empty";
     empty.hidden = true;
@@ -1005,6 +1135,8 @@
     list.dataset.gcprQueryKey = key;
     list.classList.remove(LIST_LOADING_CLASS);
     document.querySelector(".issue-pagination")?.classList.add(PAGER_HIDDEN_CLASS);
+    loadedRequestKey = key;
+    loadedState = state;
     loadedRecords = records;
     const availableFilters = {
       label: new Set(records.flatMap((record) => record.labels.map((label) => normalize(label.name)))),
@@ -1017,8 +1149,10 @@
         }
       }
     }
+    invalidateFilters();
     renderFilterPills(records);
     applyFilters();
+    return true;
   }
 
   function setLoadingUi(message) {
@@ -1144,9 +1278,9 @@
     try {
       const result = await fetchDataset(base.href, requestGeneration, currentController.signal);
       if (!result || requestGeneration !== generation) return;
-      loadedRequestKey = key;
-      loadedState = base.searchParams.get("state") || getActiveState();
-      renderRecords(result.records, key);
+      setStatus("绘制列表…", "loading");
+      const rendered = await renderRecords(result.records, key, base.searchParams.get("state") || getActiveState(), requestGeneration);
+      if (!rendered || requestGeneration !== generation) return;
       loading = false;
       setStatus("已加载 " + result.records.length + " 条", "complete");
     } catch (error) {
@@ -1196,9 +1330,24 @@
     }, 0);
   }
 
+  function cancelLoad() {
+    generation += 1;
+    currentController?.abort();
+    currentController = null;
+    loading = false;
+    activeRequestKey = "";
+  }
+
   function syncChrome() {
     chromeQueued = false;
     if (!location.pathname.startsWith("/dashboard/pulls")) {
+      if (loading) cancelLoad();
+      activeRequestKey = "";
+      loadedRequestKey = "";
+      loadedState = "";
+      loadedRecords = [];
+      datasetIndex = null;
+      filterViewCache = null;
       themeObserver?.disconnect();
       themeTargets = [];
       sizeObserver?.disconnect();
@@ -1213,8 +1362,8 @@
     }
 
     ensureControls();
-    if (!loading && loadedRequestKey && loadedState !== getActiveState()) ensureActiveDataset();
-    if (!loading && loadedRequestKey && loadedState === getActiveState()) {
+    if (!loading && lastStatusKind !== "error" && loadedRequestKey && loadedState !== getActiveState()) ensureActiveDataset();
+    if (canExportCurrentList()) {
       document.querySelector(".issue-pagination")?.classList.add(PAGER_HIDDEN_CLASS);
     }
   }
@@ -1225,6 +1374,45 @@
     requestAnimationFrame(syncChrome);
   }
 
+  function scheduleOverflow() {
+    syncFilterExpansion();
+    if (overflowQueued) return;
+    overflowQueued = true;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        overflowQueued = false;
+        updateOverflow();
+      });
+    });
+  }
+
+  function scheduleThemeSync() {
+    themeDirty = true;
+    scheduleChrome();
+    scheduleOverflow();
+  }
+
+  function handleDomMutations(mutations) {
+    const main = getMain();
+    if (!main && !loading && !themeTargets.length && !location.pathname.startsWith("/dashboard/pulls")) return;
+    let needsChrome = false;
+    for (const mutation of mutations) {
+      const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+      if (!target) continue;
+      const stylesheetChanged = mutation.type === "childList" && [...mutation.addedNodes, ...mutation.removedNodes].some((node) =>
+        node instanceof Element && (node.tagName === "STYLE" || (node.tagName === "LINK" && node.relList.contains("stylesheet"))));
+      if (stylesheetChanged || target.closest("head,style")) {
+        scheduleThemeSync();
+        continue;
+      }
+      if (mutation.type === "characterData") continue;
+      // Our toolbar and generated rows update themselves; do not feed their writes back.
+      if (target.closest("#" + TOOLBAR_ID + ',.list-item--pull[data-gcpr-generated="true"]')) continue;
+      if (!main || main.contains(target) || target.contains(main)) needsChrome = true;
+    }
+    if (needsChrome) scheduleChrome();
+  }
+
   function start() {
     requestObserver = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) handleResource(entry.name);
@@ -1232,7 +1420,7 @@
     requestObserver.observe({type:"resource",buffered:true});
     const initialEntries = performance.getEntriesByType("resource");
     for (const entry of initialEntries) handleResource(entry.name);
-    domObserver = new MutationObserver(scheduleChrome);
+    domObserver = new MutationObserver(handleDomMutations);
     domObserver.observe(document.documentElement, {childList:true,subtree:true,characterData:true});
     document.addEventListener("click", (event) => {
       if (!(event.target instanceof Element)) return;
@@ -1241,12 +1429,12 @@
       if (help?.open && !help.contains(event.target)) help.open = false;
     });
     window.addEventListener("popstate", handleRouteChange);
-    systemTheme.addEventListener("change", scheduleChrome);
+    systemTheme.addEventListener("change", scheduleThemeSync);
     document.addEventListener("load", (event) => {
-      if (event.target instanceof HTMLLinkElement && event.target.relList.contains("stylesheet")) scheduleChrome();
+      if (event.target instanceof HTMLLinkElement && event.target.relList.contains("stylesheet")) scheduleThemeSync();
     }, true);
     document.addEventListener("transitionend", (event) => {
-      if (themeTargets.includes(event.target) && ["background", "background-color", "color"].includes(event.propertyName)) scheduleChrome();
+      if (themeTargets.includes(event.target) && ["background", "background-color", "color"].includes(event.propertyName)) scheduleThemeSync();
     });
     syncChrome();
   }
