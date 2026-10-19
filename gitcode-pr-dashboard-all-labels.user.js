@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         GitCode PR Dashboard: All Pages + Labels
 // @namespace    https://github.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript
-// @version      1.5.0
+// @version      1.6.0
 // @updateURL    https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
 // @downloadURL  https://raw.githubusercontent.com/KaranocaVe/gitcode-pr-dashboard-all-labels-userscript/main/gitcode-pr-dashboard-all-labels.user.js
-// @description  Load all GitCode pull requests in the selected status and filter them by labels and repositories with live linked counts.
+// @description  Load all GitCode pull requests in the selected status and filter by labels and repositories with include/exclude states, linked counts, and dark mode.
 // @match        https://gitcode.com/dashboard/pulls*
 // @run-at       document-idle
 // @grant        none
@@ -16,7 +16,7 @@
   if (window.__gcprAllPagesLabelsInstalled) return;
   window.__gcprAllPagesLabelsInstalled = true;
 
-  const VERSION = "1.5.0";
+  const VERSION = "1.6.0";
   const LAYOUT_CLASS = "gcpr-label-layout";
   const API_ORIGIN = "https://web-api.gitcode.com";
   const API_PATH = "/issuepr/api/v1/merge_requests";
@@ -32,13 +32,23 @@
   const requestTemplates = new Map();
   const selectedLabels = new Set();
   const selectedRepositories = new Set();
+  const excludedLabels = new Set();
+  const excludedRepositories = new Set();
   const filters = {
-    label: {title:"Label", description:"label", selected:selectedLabels},
-    repository: {title:"仓库", description:"仓库", selected:selectedRepositories}
+    label: {title:"Label", description:"label", selected:selectedLabels, excluded:excludedLabels},
+    repository: {title:"仓库", description:"仓库", selected:selectedRepositories, excluded:excludedRepositories}
   };
+  const stateNames = {neutral:"不限", include:"包含", exclude:"排除"};
+  const stateSymbols = {neutral:"○", include:"+", exclude:"−"};
+  const nextStates = {neutral:"include", include:"exclude", exclude:"neutral"};
+  const recordSnapshots = new WeakMap();
+  const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 
   let requestObserver;
   let domObserver;
+  let themeObserver;
+  let themeTargets = [];
+  let colorContext = null;
   let templateRow = null;
   let labelTemplate = null;
   let activeRequestKey = "";
@@ -103,30 +113,147 @@
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
-    style.textContent =
-      "." + LAYOUT_CLASS + "{display:flex!important;flex-direction:row!important;flex-wrap:wrap!important;align-items:center;gap:14px;min-width:0}" +
-      "." + LAYOUT_CLASS + ">*{flex:0 0 100%;min-width:0;max-width:100%;box-sizing:border-box}" +
-      "." + LAYOUT_CLASS + ">.collab-status-tabs{flex:0 1 auto!important;width:auto!important;min-width:0!important;max-width:100%!important}" +
-      "." + LAYOUT_CLASS + ">#" + TOOLBAR_ID + "{flex:0 0 100%!important;width:100%!important;min-width:0!important;max-width:100%!important}" +
-      "#" + TOOLBAR_ID + "{display:flex;flex-direction:column;align-items:stretch;gap:8px;box-sizing:border-box;margin:0;min-height:34px}" +
-      "#" + TOOLBAR_ID + " .gcpr-filter-strip{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0;overflow:hidden}" +
-      "#" + TOOLBAR_ID + " .gcpr-filter-heading{display:flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;font-size:12px;color:var(--theme-text-weak,#656d76)}" +
-      "#" + TOOLBAR_ID + " .gcpr-filter-items{display:flex;align-items:center;gap:6px;flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;padding:3px 1px;scrollbar-width:thin}" +
-      "#" + TOOLBAR_ID + " .gcpr-filter-pill{display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;max-width:240px;border:1px solid var(--theme-border,#d0d7de);border-radius:999px;padding:4px 9px;background:var(--theme-bg,#fff);color:var(--theme-text,#24292f);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}" +
-      "#" + TOOLBAR_ID + " .gcpr-filter-pill:hover:not(:disabled){border-color:#8ab4f8;background:#f6f9ff}" +
-      "#" + TOOLBAR_ID + " .gcpr-filter-pill[aria-pressed='true']{border-color:#2865e0;background:#e8f0fe;color:#174ea6}" +
-      "#" + TOOLBAR_ID + " .gcpr-filter-pill:disabled{opacity:.4;cursor:not-allowed}" +
-      "#" + TOOLBAR_ID + " .gcpr-filter-name{overflow:hidden;text-overflow:ellipsis}" +
-      "#" + TOOLBAR_ID + " .gcpr-filter-count{font-size:11px;font-weight:700;opacity:.9}" +
-      "#" + TOOLBAR_ID + " .gcpr-filter-clear{flex:0 0 auto;border:0;background:transparent;color:var(--theme-text-weak,#656d76);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}" +
-      "#" + TOOLBAR_ID + " .gcpr-filter-clear[hidden]{display:none}" +
-      "#" + TOOLBAR_ID + " .gcpr-export-json{flex:0 0 auto;border:1px solid var(--theme-border,#d0d7de);border-radius:6px;padding:4px 9px;background:var(--theme-bg,#fff);color:var(--theme-text,#24292f);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}" +
-      "#" + TOOLBAR_ID + " .gcpr-export-json:disabled{opacity:.5;cursor:not-allowed}" +
-      "#" + STATUS_ID + "{margin:0 0 10px;color:var(--theme-text-weak,#656d76);font-size:12px}" +
-      ".pd-pulls .list-item--pull." + HIDDEN_CLASS + "{display:none!important}" +
-      ".pd-pulls .issue-pagination." + PAGER_HIDDEN_CLASS + "{display:none!important}" +
-      ".pd-pulls .list-surface." + LIST_LOADING_CLASS + "{display:none!important}";
+    style.textContent = `
+      #${TOOLBAR_ID},#${STATUS_ID}{
+        --gcpr-bg:#fff;--gcpr-text:#24292f;--gcpr-muted:#59636e;--gcpr-border:#d0d7de;
+        --gcpr-hover:#f3f5f7;--gcpr-hover-border:#8796a5;--gcpr-focus:#0969da;
+        --gcpr-include-bg:#e8f0fe;--gcpr-include-text:#174ea6;--gcpr-include-border:#2865e0;
+        --gcpr-exclude-bg:#fff0ee;--gcpr-exclude-text:#aa2720;--gcpr-exclude-border:#cb3a31;
+        color-scheme:light;
+      }
+      #${TOOLBAR_ID}[data-gcpr-theme="dark"],#${STATUS_ID}[data-gcpr-theme="dark"]{
+        --gcpr-bg:#1f252d;--gcpr-text:#e6edf3;--gcpr-muted:#a5b2c0;--gcpr-border:#485565;
+        --gcpr-hover:#2b3440;--gcpr-hover-border:#8796a5;--gcpr-focus:#79b8ff;
+        --gcpr-include-bg:#15335b;--gcpr-include-text:#a9d0ff;--gcpr-include-border:#6aa9ff;
+        --gcpr-exclude-bg:#4b2026;--gcpr-exclude-text:#ffb8b0;--gcpr-exclude-border:#f5827b;
+        color-scheme:dark;
+      }
+      .${LAYOUT_CLASS}{display:flex!important;flex-direction:row!important;flex-wrap:wrap!important;align-items:center;gap:14px;min-width:0}
+      .${LAYOUT_CLASS}>*{flex:0 0 100%;min-width:0;max-width:100%;box-sizing:border-box}
+      .${LAYOUT_CLASS}>.collab-status-tabs{flex:0 1 auto!important;width:auto!important;min-width:0!important;max-width:100%!important}
+      .${LAYOUT_CLASS}>#${TOOLBAR_ID}{flex:0 0 100%!important;width:100%!important;min-width:0!important;max-width:100%!important}
+      #${TOOLBAR_ID}{display:flex;flex-direction:column;align-items:stretch;gap:8px;box-sizing:border-box;margin:0;min-height:34px}
+      #${TOOLBAR_ID} .gcpr-filter-strip{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0;overflow:hidden}
+      #${TOOLBAR_ID} .gcpr-filter-heading{display:flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;font-size:12px;color:var(--gcpr-muted)}
+      #${TOOLBAR_ID} .gcpr-filter-items{display:flex;align-items:center;gap:6px;flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;padding:4px 3px;scrollbar-width:thin;scrollbar-color:var(--gcpr-border) transparent}
+      #${TOOLBAR_ID} .gcpr-filter-pill{display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;max-width:260px;border:1px solid var(--gcpr-border);border-radius:999px;padding:4px 9px;background:var(--gcpr-bg);color:var(--gcpr-text);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}
+      #${TOOLBAR_ID} .gcpr-filter-pill[data-state="neutral"]:hover:not(:disabled){border-color:var(--gcpr-hover-border);background:var(--gcpr-hover)}
+      #${TOOLBAR_ID} .gcpr-filter-pill[data-state="include"]{border-color:var(--gcpr-include-border);background:var(--gcpr-include-bg);color:var(--gcpr-include-text)}
+      #${TOOLBAR_ID} .gcpr-filter-pill[data-state="exclude"]{border-color:var(--gcpr-exclude-border);background:var(--gcpr-exclude-bg);color:var(--gcpr-exclude-text)}
+      #${TOOLBAR_ID} .gcpr-filter-pill[data-state="exclude"] .gcpr-filter-name{text-decoration:line-through}
+      #${TOOLBAR_ID} button:focus-visible{outline:2px solid var(--gcpr-focus);outline-offset:1px}
+      #${TOOLBAR_ID} .gcpr-filter-pill:disabled{opacity:.55;cursor:not-allowed}
+      #${TOOLBAR_ID} .gcpr-filter-state{flex:0 0 1em;text-align:center;font-weight:700}
+      #${TOOLBAR_ID} .gcpr-filter-name{overflow:hidden;text-overflow:ellipsis}
+      #${TOOLBAR_ID} .gcpr-filter-count{font-size:11px;font-weight:700;opacity:.95}
+      #${TOOLBAR_ID} .gcpr-filter-clear{flex:0 0 auto;border:0;background:transparent;color:var(--gcpr-muted);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}
+      #${TOOLBAR_ID} .gcpr-filter-clear[hidden]{display:none}
+      #${TOOLBAR_ID} .gcpr-filter-help{color:var(--gcpr-muted);font-size:12px;line-height:1.6}
+      #${TOOLBAR_ID} .gcpr-export-json{flex:0 0 auto;border:1px solid var(--gcpr-border);border-radius:6px;padding:4px 9px;background:var(--gcpr-bg);color:var(--gcpr-text);font:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}
+      #${TOOLBAR_ID} .gcpr-export-json:hover:not(:disabled){background:var(--gcpr-hover);border-color:var(--gcpr-hover-border)}
+      #${TOOLBAR_ID} .gcpr-export-json:disabled{opacity:.55;cursor:not-allowed}
+      #${STATUS_ID}{margin:0 0 10px;color:var(--gcpr-muted);font-size:12px}
+      .pd-pulls .list-item--pull.${HIDDEN_CLASS}{display:none!important}
+      .pd-pulls .issue-pagination.${PAGER_HIDDEN_CLASS}{display:none!important}
+      .pd-pulls .list-surface.${LIST_LOADING_CLASS}{display:none!important}
+    `;
     document.head.append(style);
+  }
+
+  function pageUsesDarkTheme(targets) {
+    const scheme = getComputedStyle(document.documentElement).colorScheme;
+    let fallback = scheme === "dark" ? true : scheme === "light" ? false : systemTheme.matches;
+    for (const node of [...targets].reverse()) {
+      const hint = [node.getAttribute("data-theme"), node.getAttribute("data-color-mode"),
+        node.getAttribute("data-bs-theme"), node.getAttribute("theme"), node.className].join(" ");
+      if (/(?:^|[\s_-])(dark|night)(?:$|[\s_-])/i.test(hint)) fallback = true;
+      else if (/(?:^|[\s_-])(light|day)(?:$|[\s_-])/i.test(hint)) fallback = false;
+    }
+    try {
+      if (!colorContext) {
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 1;
+        colorContext = canvas.getContext("2d", {willReadFrequently:true});
+      }
+      if (!colorContext) return fallback;
+      const layers = [];
+      for (const node of targets) {
+        colorContext.clearRect(0, 0, 1, 1);
+        colorContext.fillStyle = "transparent";
+        colorContext.fillStyle = getComputedStyle(node).backgroundColor;
+        colorContext.fillRect(0, 0, 1, 1);
+        const color = colorContext.getImageData(0, 0, 1, 1).data;
+        if (color[3]) layers.push([...color]);
+        if (color[3] === 255) break;
+      }
+      if (!layers.length) return fallback;
+      let background = fallback ? [18, 18, 18] : [255, 255, 255];
+      for (const [red, green, blue, opacity] of layers.reverse()) {
+        const alpha = opacity / 255;
+        background = [red, green, blue].map((value, index) => value * alpha + background[index] * (1 - alpha));
+      }
+      const linear = background.map((value) => {
+        const channel = value / 255;
+        return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
+      });
+      return .2126 * linear[0] + .7152 * linear[1] + .0722 * linear[2] < .35;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function syncTheme() {
+    const toolbar = document.getElementById(TOOLBAR_ID);
+    const main = getMain();
+    if (!toolbar || !main) return;
+    const targets = [];
+    for (let node = main; node; node = node.parentElement) targets.push(node);
+    if (targets.length !== themeTargets.length || targets.some((node, index) => node !== themeTargets[index])) {
+      themeObserver?.disconnect();
+      themeTargets = targets;
+      if (!themeObserver) themeObserver = new MutationObserver(scheduleChrome);
+      for (const node of targets) themeObserver.observe(node, {
+        attributes:true,
+        attributeFilter:["class", "style", "data-theme", "data-color-mode", "data-bs-theme", "theme"]
+      });
+    }
+    const theme = pageUsesDarkTheme(targets) ? "dark" : "light";
+    for (const node of [toolbar, document.getElementById(STATUS_ID)]) {
+      if (node && node.dataset.gcprTheme !== theme) node.dataset.gcprTheme = theme;
+    }
+  }
+
+  function filterState(filter, value) {
+    return filter.excluded.has(value) ? "exclude" : filter.selected.has(value) ? "include" : "neutral";
+  }
+
+  function setFilterState(filter, value, state) {
+    filter.selected.delete(value);
+    filter.excluded.delete(value);
+    if (state === "include") filter.selected.add(value);
+    if (state === "exclude") filter.excluded.add(value);
+  }
+
+  function snapshotRecord(record) {
+    let snapshot = recordSnapshots.get(record);
+    if (!snapshot) {
+      snapshot = {repository:repositoryKey(record.projectPath), labels:new Set(record.labels.map((label) => normalize(label.name)))};
+      recordSnapshots.set(record, snapshot);
+    }
+    return snapshot;
+  }
+
+  function matchesDimension(kind, snapshot, filter = filters[kind]) {
+    if (kind === "repository") {
+      return !filter.excluded.has(snapshot.repository) && (filter.selected.size === 0 || filter.selected.has(snapshot.repository));
+    }
+    for (const value of filter.selected) if (!snapshot.labels.has(value)) return false;
+    for (const value of filter.excluded) if (snapshot.labels.has(value)) return false;
+    return true;
+  }
+
+  function matchesSnapshot(snapshot) {
+    return matchesDimension("label", snapshot) && matchesDimension("repository", snapshot);
   }
 
   function setStatus(message, kind) {
@@ -186,7 +313,7 @@
     if (!main || !tabs) return null;
     addStyles();
     const layout = tabs.parentElement;
-    layout.classList.add(LAYOUT_CLASS);
+    if (!layout.classList.contains(LAYOUT_CLASS)) layout.classList.add(LAYOUT_CLASS);
 
     let toolbar = main.querySelector("#" + TOOLBAR_ID);
     let rebuilt = false;
@@ -212,6 +339,14 @@
       }
     }
 
+    let help = toolbar.querySelector(".gcpr-filter-help");
+    if (!help) {
+      help = document.createElement("div");
+      help.className = "gcpr-filter-help";
+      help.textContent = "点击循环：○ 不限 → + 包含 → − 排除 → ○ 不限；→ 数字为下次点击后的条数";
+    }
+    if (toolbar.lastElementChild !== help) toolbar.append(help);
+
     if (toolbar.previousElementSibling !== tabs || toolbar.parentElement !== layout) {
       tabs.insertAdjacentElement("afterend", toolbar);
     }
@@ -219,6 +354,7 @@
     if (toolbar.dataset.gcprEventsBound !== "true") {
       toolbar.dataset.gcprEventsBound = "true";
       toolbar.addEventListener("click", (event) => {
+        if (!(event.target instanceof Element)) return;
         if (event.target.closest(".gcpr-export-json")) {
           exportCurrentList();
           return;
@@ -228,6 +364,7 @@
           const filter = filters[clear.dataset.filter];
           if (!filter) return;
           filter.selected.clear();
+          filter.excluded.clear();
           renderFilterPills(loadedRecords);
           applyFilters();
           return;
@@ -237,8 +374,9 @@
         const filter = filters[pill.dataset.filter];
         if (!filter) return;
         const value = pill.dataset.value;
-        if (filter.selected.has(value)) filter.selected.delete(value);
-        else filter.selected.add(value);
+        const state = filterState(filter, value);
+        if (!canExportCurrentList() && state === "neutral") return;
+        setFilterState(filter, value, nextStates[state]);
         renderFilterPills(loadedRecords);
         applyFilters();
       });
@@ -263,6 +401,7 @@
       }
     }
     updateExportButton();
+    syncTheme();
     return toolbar;
   }
 
@@ -342,45 +481,42 @@
   }
 
   function summarizeFilterCounts(records) {
-    const labels = new Map();
-    const repositories = new Map();
-    let matching = 0;
-    for (const record of records) {
-      const names = record.labels.map((label) => label.name);
-      if (!matchesSelectedLabels(names)) continue;
-      const repository = repositoryKey(record.projectPath);
-      // Repositories use OR: count each repository independently of that selection.
-      repositories.set(repository, (repositories.get(repository) || 0) + 1);
-      if (!matchesSelectedRepository(record.projectPath)) continue;
-      matching += 1;
-      // Labels use AND: each badge predicts the result of adding that label.
-      for (const name of new Set(names.map(normalize))) {
-        labels.set(name, (labels.get(name) || 0) + 1);
-      }
+    const snapshots = records.map(snapshotRecord);
+    const result = {matching:snapshots.filter(matchesSnapshot).length};
+    for (const [kind, filter] of Object.entries(filters)) {
+      const other = kind === "label" ? "repository" : "label";
+      const eligible = snapshots.filter((snapshot) => matchesDimension(other, snapshot));
+      const totals = kind === "label" ? summarizeLabels(records) : summarizeRepositories(records);
+      result[kind] = totals.map((entry) => {
+        const state = filterState(filter, entry.value);
+        const next = nextStates[state];
+        const candidate = {selected:new Set(filter.selected), excluded:new Set(filter.excluded)};
+        setFilterState(candidate, entry.value, next);
+        const count = eligible.reduce((sum, snapshot) => sum + Number(matchesDimension(kind, snapshot, candidate)), 0);
+        return {...entry, total:entry.count, count, state, next};
+      });
     }
-    return {labels, repositories, matching};
+    return result;
   }
 
   function renderFilterPills(records) {
     const toolbar = document.getElementById(TOOLBAR_ID);
     if (!toolbar) return;
     toolbar.dataset.gcprFiltersKey = loadedRequestKey;
-    const counts = summarizeFilterCounts(records);
     const ready = canExportCurrentList();
+    const counts = summarizeFilterCounts(records);
 
     for (const [kind, filter] of Object.entries(filters)) {
       const items = toolbar.querySelector(".gcpr-" + kind + "-items");
       const loaded = toolbar.querySelector(".gcpr-" + kind + "-loaded");
       const clear = toolbar.querySelector(".gcpr-" + kind + "-clear");
       if (!items || !loaded || !clear) continue;
-      // Keep the full option set and its ordering while only the counts change.
-      const totals = kind === "label" ? summarizeLabels(records) : summarizeRepositories(records);
-      const linkedCounts = kind === "label" ? counts.labels : counts.repositories;
-      const entries = totals.map((entry) => ({...entry, total:entry.count, count:linkedCounts.get(entry.value) || 0}));
+      const entries = counts[kind];
+      const active = filter.selected.size + filter.excluded.size;
+      const selection = active ? " · 含 " + filter.selected.size + " / 排 " + filter.excluded.size : " · 不限";
       const summary = !ready ? (loading ? "正在加载…" : "等待完整列表") : kind === "label"
-        ? "命中 " + counts.matching + " / " + records.length + " 条"
-        : "匹配 " + entries.filter((entry) => entry.count > 0).length + " / " + entries.length + " 个" +
-          (filter.selected.size ? " · 已选 " + filter.selected.size + " 个" : " · 全部");
+        ? "命中 " + counts.matching + " / " + records.length + " 条" + selection
+        : "共 " + entries.length + " 个" + selection;
       if (loaded.textContent !== summary) loaded.textContent = summary;
 
       if (!entries.length) {
@@ -395,49 +531,50 @@
       } else {
         const existing = new Map([...items.querySelectorAll(".gcpr-filter-pill")].map((pill) => [pill.dataset.value, pill]));
         const desired = [];
-        for (const {value, name, count, total} of entries) {
+        for (const {value, name, count, total, state, next} of entries) {
           let pill = existing.get(value);
-          if (!pill) {
+          if (!pill || !pill.querySelector(".gcpr-filter-state")) {
             pill = document.createElement("button");
             pill.type = "button";
             pill.className = "gcpr-filter-pill";
             pill.dataset.filter = kind;
             pill.dataset.value = value;
+            const marker = document.createElement("span");
+            marker.className = "gcpr-filter-state";
+            marker.setAttribute("aria-hidden", "true");
             const text = document.createElement("span");
             text.className = "gcpr-filter-name";
-            text.textContent = name;
             const badge = document.createElement("span");
             badge.className = "gcpr-filter-count";
-            pill.append(text, badge);
+            badge.setAttribute("aria-hidden", "true");
+            pill.append(marker, text, badge);
           }
-          const selected = filter.selected.has(value);
-          const pressed = String(selected);
+          if (pill.dataset.state !== state) pill.dataset.state = state;
+          const pressed = state === "neutral" ? "false" : state === "include" ? "true" : "mixed";
           if (pill.getAttribute("aria-pressed") !== pressed) pill.setAttribute("aria-pressed", pressed);
-          // Selected zero-count options must remain clickable to recover from an empty result.
-          const disabled = (!ready || count === 0) && !selected;
+          // All ready options, including zero counts, must allow cycling into exclusion.
+          const disabled = !ready && state === "neutral";
           if (pill.disabled !== disabled) pill.disabled = disabled;
-          const explanation = kind === "label"
-            ? (selected ? "当前筛选结果 " + count + " 条 PR" : "在当前筛选条件下再选此 label，将命中 " + count + " 条 PR")
-            : "满足已选 label 的该仓库 PR 共 " + count + " 条；多选仓库取并集";
-          const description = name + " · " + (ready
-            ? explanation + "；当前列表总计 " + total + " 条"
+          const description = name + "；当前：" + stateNames[state] + "；下次点击：" + stateNames[next] + "；" + (ready
+            ? "点击后命中 " + count + " 条 PR；该项原始数量 " + total + " 条"
             : "等待当前列表完整加载，数量暂不可用");
           if (pill.title !== description) pill.title = description;
           if (pill.getAttribute("aria-label") !== description) pill.setAttribute("aria-label", description);
+          const marker = pill.querySelector(".gcpr-filter-state");
+          if (marker.textContent !== stateSymbols[state]) marker.textContent = stateSymbols[state];
           const text = pill.querySelector(".gcpr-filter-name");
           if (text.textContent !== name) text.textContent = name;
           const badge = pill.querySelector(".gcpr-filter-count");
-          const countText = ready ? String(count) : "—";
+          const countText = ready ? "→" + count : "—";
           if (badge.textContent !== countText) badge.textContent = countText;
           desired.push(pill);
         }
-        // Reuse buttons to preserve focus and horizontal scroll on selection changes.
         for (let index = 0; index < desired.length; index += 1) {
           if (items.children[index] !== desired[index]) items.insertBefore(desired[index], items.children[index] || null);
         }
         while (items.children.length > desired.length) items.lastElementChild.remove();
       }
-      if (clear.hidden !== (filter.selected.size === 0)) clear.hidden = filter.selected.size === 0;
+      if (clear.hidden !== (active === 0)) clear.hidden = active === 0;
     }
     updateExportButton();
   }
@@ -584,21 +721,12 @@
     return row;
   }
 
-  function matchesSelectedLabels(labelNames) {
-    const labels = new Set(labelNames.map(normalize));
-    return [...selectedLabels].every((label) => labels.has(normalize(label)));
-  }
-
-  function matchesSelectedRepository(projectPath) {
-    return selectedRepositories.size === 0 || selectedRepositories.has(repositoryKey(projectPath));
-  }
-
   function matchesFilters(projectPath, labelNames) {
-    return matchesSelectedRepository(projectPath) && matchesSelectedLabels(labelNames);
+    return matchesSnapshot({repository:repositoryKey(projectPath), labels:new Set(labelNames.map(normalize))});
   }
 
   function filteredRecords() {
-    return loadedRecords.filter((record) => matchesFilters(record.projectPath, record.labels.map((label) => label.name)));
+    return loadedRecords.filter((record) => matchesSnapshot(snapshotRecord(record)));
   }
 
   function canExportCurrentList() {
@@ -676,8 +804,10 @@
       repository: new Set(records.map((record) => repositoryKey(record.projectPath)))
     };
     for (const [kind, filter] of Object.entries(filters)) {
-      for (const selected of filter.selected) {
-        if (!availableFilters[kind].has(selected)) filter.selected.delete(selected);
+      for (const values of [filter.selected, filter.excluded]) {
+        for (const value of values) {
+          if (!availableFilters[kind].has(value)) values.delete(value);
+        }
       }
     }
     renderFilterPills(records);
@@ -812,7 +942,7 @@
       loadedState = base.searchParams.get("state") || getActiveState();
       renderRecords(result.records, key);
       loading = false;
-      setStatus("已完整加载 " + result.records.length + " 条 PR，共 " + result.pageCount + " 页；label 数量按完整列表统计", "complete");
+      setStatus("已完整加载 " + result.records.length + " 条 PR，共 " + result.pageCount + " 页；支持包含/排除筛选，→ 数字为下次点击后的条数", "complete");
     } catch (error) {
       if (requestGeneration !== generation) return;
       loading = false;
@@ -862,6 +992,8 @@
   function syncChrome() {
     chromeQueued = false;
     if (!location.pathname.startsWith("/dashboard/pulls")) {
+      themeObserver?.disconnect();
+      themeTargets = [];
       document.getElementById(TOOLBAR_ID)?.remove();
       for (const node of document.querySelectorAll("." + LAYOUT_CLASS)) node.classList.remove(LAYOUT_CLASS);
       document.getElementById(STATUS_ID)?.remove();
@@ -897,6 +1029,13 @@
       if (event.target instanceof Element && event.target.closest(".pd-pulls .collab-status-tabs [role='tab']")) handleRouteChange();
     });
     window.addEventListener("popstate", handleRouteChange);
+    systemTheme.addEventListener("change", scheduleChrome);
+    document.addEventListener("load", (event) => {
+      if (event.target instanceof HTMLLinkElement && event.target.relList.contains("stylesheet")) scheduleChrome();
+    }, true);
+    document.addEventListener("transitionend", (event) => {
+      if (themeTargets.includes(event.target) && ["background", "background-color", "color"].includes(event.propertyName)) scheduleChrome();
+    });
     syncChrome();
   }
 
